@@ -13,12 +13,20 @@ dependency) instead of read into an owned buffer: for the 204 MB
 peak-heap breakdown); `mmap` maps the page cache directly into the
 process's address space, no copy.
 
-`records.csv` is split into up to 12 record-aligned byte ranges.
-The split (`src/chunked.rs`) tracks the same quote-nesting state as
-the parser itself, so a target split point that would land inside a
-quoted field (which may contain embedded newlines) is snapped forward
-to the next out-of-quote `\n`; no record is ever cut across a thread
-boundary. `CsvReader` (`src/csv_parser.rs`) is an RFC4180-style reader
+`records.csv` is split into up to 12 record-aligned byte ranges via
+`src/chunked.rs`'s `record_aligned_ranges`, which does NOT scan the
+whole file sequentially to find them (an earlier version did, and
+phase instrumentation showed that single-threaded scan alone costing
+more than phases 1 and 2 below combined -- see PERF.md). Instead: each
+of the 11 target split points is independently snapped forward to the
+nearest RAW `\n` (parallel, not quote-aware -- a cheap guess, correct
+for the overwhelming majority of targets since most lines aren't
+inside a multi-line quoted field); the resulting chunks are scanned in
+parallel, each assuming it starts at a field boundary; then one O(n)
+sequential pass (not O(file size)) verifies each chunk's assumed entry
+state against the previous chunk's REAL exit state, re-scanning only
+the rare chunk whose guess was wrong. `CsvReader` (`src/csv_parser.rs`)
+is an RFC4180-style reader
 matching Python's own lenient `csv` module: `""`-escaped quotes,
 embedded raw LF/CRLF inside quoted fields, mixed CRLF/LF terminators
 between records, "trailing content after a closing quote is appended
@@ -80,8 +88,8 @@ None (Rust standard library only).
 
 - Time profiling on the real board/CI numbers for this exact design,
   to find the next-largest cost (`CsvReader::next()` still allocates a
-  fresh `Vec` per record for its field list, which this round left
-  untouched since the dominant cost was the mutex, not that).
+  fresh `Vec` per record for its field list; phase 2's `HashMap`/
+  `HashSet` dedup also has real per-entry overhead at ~2M names).
 - PGO (train on a seed other than 1, per the organiser's allowlisted
   `llvm-tools` image) if it clears the break-even bar for the lines it
   costs.
