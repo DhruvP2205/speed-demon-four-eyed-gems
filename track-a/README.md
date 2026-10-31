@@ -81,3 +81,18 @@ None (Rust standard library only).
   thread to know its own precise per-group write offset ahead of
   time, not just a disjoint byte range like the percentile step gets
   for free).
+- After the by-value merge fix (see PERF.md), the dominant remaining
+  heap cost is structural, not a leak: every thread's raw `(group,
+  latency)` pairs (packed `u64`, ~24.8 MB total at `full`) have to be
+  held in memory in SOME form during the parallel parse phase itself,
+  before any percentile can be computed exactly. Shrinking this
+  further would mean either packing `local_group` into fewer than 32
+  bits (safe only if the real endpoint/hour cardinality is known to
+  stay well under this corpus's current ~1,842 endpoints x however
+  many hours -- worth confirming against the spec's stated bounds,
+  not assumed) or an exact bucketed-histogram approach keyed by
+  latency value instead of storing every raw entry (only safe if
+  latency's real-world range is tight enough that a histogram beats
+  ~25 MB of raw entries, which spec's own "uint32 microseconds" type
+  does not guarantee -- would need to check the actual generator's
+  output range first).
