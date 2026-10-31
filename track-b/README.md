@@ -85,13 +85,16 @@ sorting and plain sorted-list set operations.
 ## With another 24 hours
 
 - `scan_docs` (tokenizing all 36M tokens at `full`, checking each
-  against the needed-term table) is now the single largest remaining
-  phase (~470ms of ~800ms total index build). The FNV hasher only
-  shaved a little off it, which suggests the per-byte tokenization
-  loop itself -- not the hashmap lookup -- is the real floor; worth a
+  against the needed-term table) is still the single largest remaining
+  phase. The FNV hasher only shaved a little off it, and fusing
+  `tokenize.rs`'s classify-then-copy-lower into one pass (see PERF.md)
+  only shaved ~15% off `scan_docs` itself -- both suggest the per-byte
+  tokenization loop's branch-per-byte classification, not the hashmap
+  lookup or the lowercasing, is the real remaining floor; worth a
   closer look at whether it can be SIMD-accelerated (bulk-classify
   `[a-z0-9]` runs the way Track C's bulk quote/comma/newline search
-  does) rather than one branch per byte.
+  does) rather than one branch per byte -- a bigger rewrite than fit in
+  this round's time budget.
 - The counting-sort scatter (`build_index`'s final pass) is currently
   single-threaded (~190ms at `full`); parallelizing it would need each
   thread to know its own precise per-term starting offset ahead of

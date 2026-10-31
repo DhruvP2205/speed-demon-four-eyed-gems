@@ -49,15 +49,22 @@ pub fn for_each_token(text: &[u8], buf: &mut [u8; MAX_TOKEN_LEN], mut f: impl Fn
     let mut i = 0;
     while i < n {
         if is_token_byte(text[i]) {
-            let start = i;
+            // Classify and lowercase in the SAME pass, writing straight
+            // into `buf` as each byte is scanned -- an earlier version
+            // scanned once to find the token's end, then copied+lowered
+            // it in a second loop, computing `to_lower` on every token
+            // byte twice. `len` keeps counting past `MAX_TOKEN_LEN` (the
+            // position count must match the real token stream) but
+            // stops writing once `buf` is full.
+            let mut len = 0usize;
             while i < n && is_token_byte(text[i]) {
+                if len < MAX_TOKEN_LEN {
+                    buf[len] = to_lower(text[i]);
+                }
+                len += 1;
                 i += 1;
             }
-            let len = i - start;
             if len <= MAX_TOKEN_LEN {
-                for (j, &b) in text[start..i].iter().enumerate() {
-                    buf[j] = to_lower(b);
-                }
                 f(position, &buf[..len]);
             }
             position += 1;
