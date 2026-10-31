@@ -416,7 +416,11 @@ in the targets table.
   two-pass build's own new cost profile -- it was confirmed necessary on
   the OLD single-pass build (7x regression without it) but has not been
   re-A/B'd since the two-pass rewrite landed.
-- **Phase 3 not started** (task #22, pending).
+- **Phase 3 status**: attempted; an adaptive bidirectional/ALT port was
+  reverted after official full-scale hash mismatch (CI runs
+  `41252144661` and `41252144598`). The current known-correct implementation
+  remains the 4-ary-heap version from `f6a186a`; no further Track D change is
+  kept without an official hash gate and a board score.
 
 ### Line-count reconciliation note
 
