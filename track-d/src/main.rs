@@ -26,12 +26,12 @@
 //! combined) it pays for. See PERF.md for the full numbers.
 
 mod csr;
+mod heap;
 mod mmap_file;
 mod parse;
 mod reorder;
 mod workspace;
 
-use std::cmp::Reverse;
 use std::io::{BufWriter, Write};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -89,9 +89,9 @@ fn load_graph(path: &str) -> (Csr, Vec<bool>, Vec<u32>) {
 fn shortest_path(csr: &Csr, s: u32, t: u32, ws: &mut Workspace) -> Option<u64> {
     ws.reset();
     ws.set(s, 0);
-    ws.heap.push((Reverse(0), s));
+    ws.heap.push(0, s);
 
-    while let Some((Reverse(d), u)) = ws.heap.pop() {
+    while let Some((d, u)) = ws.heap.pop() {
         if d > ws.get(u).expect("heap entry always has a dist") {
             continue; // stale: u was already settled at a shorter distance
         }
@@ -107,7 +107,7 @@ fn shortest_path(csr: &Csr, s: u32, t: u32, ws: &mut Workspace) -> Option<u64> {
             };
             if improves {
                 ws.set(v, nd);
-                ws.heap.push((Reverse(nd), v));
+                ws.heap.push(nd, v);
             }
         }
     }
@@ -177,7 +177,6 @@ fn main() {
             results[i] = answer;
         }
     }
-
     std::fs::create_dir_all(out_dir).expect("create out dir");
     let out_file =
         std::fs::File::create(format!("{out_dir}/{OUTPUT_FILE}")).expect("create output");

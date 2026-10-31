@@ -18,8 +18,7 @@
 //! real distance fits in `(n - 1) * (2^32 - 1) < 2^63` (spec section
 //! 3), far below it.
 
-use std::cmp::Reverse;
-use std::collections::BinaryHeap;
+use crate::heap::QuaternaryHeap;
 
 const PAGE_SIZE: usize = 1024;
 const UNSET: u64 = u64::MAX;
@@ -30,7 +29,7 @@ pub struct Workspace {
     page_table: Vec<Option<Page>>,
     pool: Vec<Page>,
     touched_pages: Vec<usize>,
-    pub heap: BinaryHeap<(Reverse<u64>, u32)>,
+    pub heap: QuaternaryHeap<u32>,
 }
 
 impl Workspace {
@@ -42,7 +41,7 @@ impl Workspace {
             page_table,
             pool: Vec::new(),
             touched_pages: Vec::new(),
-            heap: BinaryHeap::new(),
+            heap: QuaternaryHeap::new(),
         }
     }
 
@@ -114,8 +113,8 @@ mod tests {
     fn reset_drops_leftover_heap_entries_from_an_early_exit() {
         let mut ws = Workspace::new(4096);
         ws.set(0, 0);
-        ws.heap.push((Reverse(0), 0));
-        ws.heap.push((Reverse(5), 3)); // never popped: the query returned early
+        ws.heap.push(0, 0);
+        ws.heap.push(5, 3); // never popped: the query returned early
         ws.reset();
         assert!(ws.heap.is_empty());
     }

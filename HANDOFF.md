@@ -436,7 +436,7 @@ worth a direct look).
 | 1a | B memory | ~8h (shared w/ 1b) | 835MB -> <=50MB | **DONE (pending board confirm)** -- position-index removal shipped (`0465a16`); CI: M -28.5% cgroup / -40.7% massif, T -15.7% bonus |
 | 1b | B time | (shared w/ 1a) | 1.084s -> <=0.30s | **DONE for this round (pending board confirm)** -- tokenizer double-lowercase fix shipped (`9cacecd`), ~15% faster on scan_docs locally (12-thread, paired); SIMD tokenization identified as the next lever but out of scope this round |
 | 2 | A | ~5h | T<=0.10s, M<=25MB | **DONE for this round (pending board confirm)** -- by-value merge fix shipped (`7f0b249`), CI: M -41.8% cgroup / -24.5% massif; still short of <=25MB (structural latencies-storage floor identified); T unaffected as expected |
-| 3 | D | ~6h | T<=0.17s | NOT STARTED |
+| 3 | D | ~6h | T<=0.17s | IN PROGRESS -- 4-ary Dijkstra heap implemented and locally validated; official board confirmation pending |
 | 4 | C (conditional) | ~4h | T<=0.12s, M<=40MB | NOT STARTED -- only if C can beat the lowest counted track after 1-3 |
 | 5 | Global tuning | ~4h (Nov 1) | thread sweep, MALLOC_ARENA_MAX, PGO | NOT STARTED |
 | 6 | Lines + freeze prep | (Nov 2 morning; team freeze 10:00 UTC) | dead code removal, final verification, READMEs/PERF.md complete, LICENSE confirmed | NOT STARTED |
