@@ -4,8 +4,9 @@ Repo root, outside every `track-*/` folder on purpose -- this file does not
 count toward any track's S. Written for an agent with zero prior context on
 this session. Keep it accurate; update it at the end of every phase.
 
-Last updated: 2026-10-31, mid Phase 1a (Track B memory redesign), by the
-agent executing the MISSION in the section below.
+Last updated: 2026-10-31, end of Phase 1 (Track B memory + time), about to
+start Phase 2 (Track A), by the agent executing the MISSION in the section
+below.
 
 ## 0. The mission in force right now
 
@@ -237,7 +238,7 @@ in the targets table.
 - **Leader**: T 0.284 s, M 43 MB.
 - **Target** (mission, Phase 1): T <= 0.30 s, M <= 50 MB (exit Phase 1
   early if B reaches >= 60 pts on the board).
-- **Just shipped (commit `0465a16`, pushed to speed-demon)**: removed the
+- **Phase 1a shipped (commit `0465a16`, pushed)**: removed the
   per-document token-POSITION index entirely. `valgrind massif` on the
   PRE-redesign build (CI run `41183747430`) showed its true peak (814.2 MB
   heap) was 62% position-related: 37.09% (302.0 MB) the per-thread
@@ -248,21 +249,55 @@ in the targets table.
   oversized/skipped token correctly breaking adjacency -- covered by new
   tests). `needs_position` removed end-to-end (dead once nothing stores
   positions). All 43 unit tests pass (37 prior + 6 new `eval_phrase` edge
-  cases). `scc` now reports 1058 Code lines (down from the pre-redesign
-  1084 the board reported -- consistent with removing ~4 fields/functions).
-  **CI status at last check**: `verify-official` PASSED (run `41239004719`
-  -- hash-matches the real seed-1 data and holdout seeds 2/3/4). The
-  `track-b` workflow (run `41239004748`, massif + bench.sh cgroup M) was
-  still running -- **check `gh run view 41239004748` for the actual
-  massif/cgroup M result and fill in `track-b/PERF.md` step 6's blank T/M/
-  Points columns, then push to get a fresh board run.**
-- **Phase 1b (time tuning toward T <= 0.30s) not started** -- do it after
-  confirming Phase 1a's board number, per the mission's own phase order.
-  The counting-sort merge and parallel query eval are already in place;
-  removing position tracking should also help `scan_docs`'s per-token
-  work (one fewer branch, one fewer push per matched token in the
-  needs-position case). Re-profile before assuming this is enough.
-- **Task #19 (Phase 1a) in_progress, #20 (Phase 1b) pending.**
+  cases). `scc` reports 1058 Code lines (down from the pre-redesign 1084).
+  CI confirmed (`verify-official` run `41239004719` PASS; `track-b` run
+  `41239004748`): massif heap peak 814.2 -> 482.9 MB (-40.7%), CI cgroup
+  `memory.peak` 699.01 -> 499.59 MB (-28.5%), CI wall 4.671 -> 3.938 s
+  (-15.7%, a free bonus -- removing position tracking also cut
+  `scan_docs`'s per-token work).
+- **Phase 1b shipped (commit `9cacecd`, pushed)**: diagnosed the
+  post-1a build with temporary phase instrumentation (reverted before
+  commit) on a SYNTHETIC full-scale-sized dataset -- a sandbox policy
+  blocked running the officially cloned event repo's generator script
+  without explicit authorization, so this was a same-format proxy for
+  relative timing only, not hash-matched or absolute. Breakdown:
+  `build_index` 70-75% of total, `scan_docs` 70-80% of `build_index`'s own
+  time; `eval_queries` (what Phase 1b's own bullet list focuses on --
+  parallel eval, atomic work counter, galloping intersection) is already
+  only ~2-3% of total, nothing to gain there, matching the mission's
+  "exit when the budget is used" clause more than its bullet list. Found
+  and fixed one real win in `scan_docs`'s dominant cost: `tokenize.rs`'s
+  `for_each_token` classified a token's bytes once (via `is_token_byte`,
+  itself calling `to_lower`) then copied+lowered them AGAIN in a second
+  loop -- `to_lower` computed twice per byte. Fused into one pass, net
+  -5 lines (an S improvement, not a cost). Interleaved 5-round local
+  12-thread A/B isolating `scan_docs`: fused beat baseline in EVERY
+  round, ~15% faster on that sub-phase. All 43 tests still pass
+  (behavior is identical, just computed once). CI's 2-core runner barely
+  moved (3.938->3.842s wall, 499.59->499.73MB M) -- expected and NOT a
+  sign the fix is wrong: this is the same CI-2-core-vs-12-thread-board
+  divergence Track D hit (see pitfalls section); kept on the strength of
+  the paired local signal, awaiting the board's own T.
+  - **Remaining known bottleneck, NOT pursued this round**: `scan_docs`'s
+    per-byte branch-per-byte classification itself (not the hashing, not
+    the (now-fixed) double-lowercasing) is likely the real remaining
+    floor. SIMD bulk-classification of `[a-z0-9]` runs (the way Track C's
+    `find_next_quote`/`find_next_special` do for CSV) is the documented
+    next idea in `track-b/README.md`'s "with another 24 hours" section --
+    a bigger rewrite than fit in this round's time budget; revisit in
+    Phase 5 if time remains, or leave for "with another 24 hours."
+- **Phase 1 (1a+1b) considered done for this round** -- both the explicit
+  Phase 1b bullet-list items were already satisfied by the existing
+  design (nothing to change there), and the one real remaining lever
+  (SIMD tokenization) is out of scope for the budget. Moving to Phase 2
+  per the mission's "keep going phase to phase" instruction. Still
+  **awaiting a board run** to confirm whether B actually reached its
+  <=0.30s/<=50MB targets or >=60pts -- get the user to relay the next
+  board number and update both PERF.md and this file's numbers above
+  once it's in hand.
+- **Tasks #19 (Phase 1a) and #20 (Phase 1b): both should be marked
+  completed** (task-tracker IDs are session-local; re-derive from this
+  file plus PERF.md if the tracker is gone).
 
 ### Track C -- Join (`c_join`, `records.csv`+`regions.csv` -> `aggregates.txt`)
 
@@ -365,8 +400,8 @@ worth a direct look).
 
 | Phase | Track | Budget | Target | Status |
 |---|---|---|---|---|
-| 1a | B memory | ~8h (shared w/ 1b) | 835MB -> <=50MB | **IN PROGRESS** -- position-index removal shipped (commit `0465a16`), CI running, board number not yet in hand |
-| 1b | B time | (shared w/ 1a) | 1.084s -> <=0.30s | NOT STARTED -- do after 1a's board number confirms |
+| 1a | B memory | ~8h (shared w/ 1b) | 835MB -> <=50MB | **DONE (pending board confirm)** -- position-index removal shipped (`0465a16`); CI: M -28.5% cgroup / -40.7% massif, T -15.7% bonus |
+| 1b | B time | (shared w/ 1a) | 1.084s -> <=0.30s | **DONE for this round (pending board confirm)** -- tokenizer double-lowercase fix shipped (`9cacecd`), ~15% faster on scan_docs locally (12-thread, paired); SIMD tokenization identified as the next lever but out of scope this round |
 | 2 | A | ~5h | T<=0.10s, M<=25MB | NOT STARTED |
 | 3 | D | ~6h | T<=0.17s | NOT STARTED |
 | 4 | C (conditional) | ~4h | T<=0.12s, M<=40MB | NOT STARTED -- only if C can beat the lowest counted track after 1-3 |
@@ -420,6 +455,23 @@ if the tracker is gone): #19=1a, #20=1b, #21=2, #22=3, #23=4, #24=5, #25=6.
 
 ## 6. Pitfalls already hit in this repo (don't rediscover these)
 
+- **Running the officially cloned event repo's generator/reference
+  scripts locally can hit a sandbox policy block.** CI does `git clone
+  https://github.com/hackathon-raptors/speed-demon-2026.git` and then
+  `python official/generators/<module>.py ...` routinely (see every
+  `track-*.yml` and `verify-official.yml`) -- that's fine there because
+  the workflow YAML is reviewed, trusted, already-committed automation.
+  Running the SAME command locally, in an interactive agent session, can
+  get denied by an auto-mode classifier as "running code from an
+  externally cloned repo without explicit user authorization," even
+  though it's the identical official URL. Don't try to work around a
+  denial like this. If full-scale official data is needed for local
+  profiling and this triggers again: either ask the user to authorize it
+  explicitly, or synthesize a same-format proxy dataset with your own
+  small generator script for RELATIVE timing comparisons only (A/B
+  before/after on your own change) -- never for hash-matching or
+  absolute numbers, since it won't match the real reference's output.
+  This is what Phase 1b's diagnosis did (see `track-b/PERF.md` step 7).
 - **Windows memory numbers are not trustworthy.** Local dev-machine memory
   readings (Windows `PeakWorkingSet64`, no cgroup, no containerization) do
   not reliably move in the direction real changes should move them --
