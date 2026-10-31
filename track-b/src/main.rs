@@ -65,12 +65,7 @@ fn main() {
         MappedFile::open(&docs_path, true).unwrap_or_else(|e| panic!("open {docs_path}: {e}"));
     let docs_data = dmapped.as_slice();
     let ranges = line_aligned_ranges(docs_data, MAX_THREADS);
-    let index = build_index(
-        docs_data,
-        &ranges,
-        &query_index.term_bytes,
-        &query_index.needs_position,
-    );
+    let index = build_index(docs_data, &ranges, &query_index.term_bytes);
 
     let num_queries = query_index.queries.len();
     let thread_count = MAX_THREADS.min(num_queries.max(1));
@@ -81,6 +76,7 @@ fn main() {
 
     let index_ref = &index;
     let queries_ref = &query_index.queries;
+    let term_bytes_ref = &query_index.term_bytes;
     let per_thread: Vec<(usize, Vec<Vec<u32>>)> = std::thread::scope(|scope| {
         let handles: Vec<_> = chunk_ranges
             .iter()
@@ -88,7 +84,7 @@ fn main() {
                 scope.spawn(move || {
                     let answers: Vec<Vec<u32>> = queries_ref[start..end]
                         .iter()
-                        .map(|q| eval::eval(index_ref, q))
+                        .map(|q| eval::eval(index_ref, docs_data, term_bytes_ref, q))
                         .collect();
                     (start, answers)
                 })

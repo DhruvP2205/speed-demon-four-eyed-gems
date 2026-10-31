@@ -13,11 +13,9 @@ a legitimate strategy, not a shortcut:
 
 1. **Parse `queries.txt` first** (`src/query_parse.rs`), before
    `docs.txt` is ever touched. Every distinct term across all 50,000
-   BOOL/PHRASE queries is interned to a small integer id; terms used
-   in at least one PHRASE query are additionally flagged as needing
-   per-document token POSITIONS (BOOL-only terms only ever need
-   per-document PRESENCE). At `full` scale this is ~75,700 distinct
-   terms out of the corpus's 600,000-word vocabulary.
+   BOOL/PHRASE queries is interned to a small integer id. At `full`
+   scale this is ~75,700 distinct terms out of the corpus's 600,000-
+   word vocabulary.
 2. **Scan `docs.txt` once, in parallel** (`src/index.rs`): up to 12
    threads, each over a disjoint line-aligned byte range (one
    document per line, spec section 2.1 guarantees no embedded TAB/LF/
@@ -30,37 +28,49 @@ a legitimate strategy, not a shortcut:
    with a hand-rolled FNV-1a hasher (`src/fnv_hasher.rs`) rather than
    std's default SipHash, since this table is built from the query
    file's own terms, not untrusted input, and gets looked up once per
-   token (36M times at `full`).
+   token (36M times at `full`). Only PRESENCE is stored (which
+   documents contain a term at least once) -- never per-document
+   token POSITIONS: an earlier version kept a position index for
+   PHRASE queries too, and massif showed it was 62% of peak heap
+   (see PERF.md) for a structure that only ever gets consulted for
+   the small subset of documents a PHRASE query's PRESENCE
+   intersection narrows down to. Also built in this pass, at no extra
+   scanning cost: `doc_offsets`, each document's absolute byte range
+   in the mmap'd corpus, an 8-byte-per-document table (~2 MB at
+   `full`) that step 4 uses to re-tokenize a PHRASE candidate
+   directly off the mapping, never from a stored copy.
 3. **Merge with a counting-sort scatter, not a comparison sort.** Each
-   thread already pushes its own presence/position entries in
-   ascending `(doc_id)` / `(doc_id, position)` order (documents are
-   scanned in file order within one thread's range, and the ranges
-   themselves are in ascending doc-id order), so concatenating thread
-   0's, then thread 1's, ... entries for a given term is ALREADY fully
-   sorted. An earlier version concatenated everything into one `Vec`
-   and called `sort_unstable` on it instead -- measured costing 1.81s
-   of a 2.67s total index build at `full` (~47M entries), by far the
-   dominant cost. Replacing it with summing each thread's per-term
-   counts into one histogram, prefix-summing it into offsets, then
-   copying each thread's entries into their term's slot turns that
-   into a single O(n) linear pass, cutting the index-build phase to
-   well under a third of its former cost.
+   thread already pushes its own presence entries in ascending
+   `doc_id` order (documents are scanned in file order within one
+   thread's range, and the ranges themselves are in ascending doc-id
+   order), so concatenating thread 0's, then thread 1's, ... entries
+   for a given term is ALREADY fully sorted. An earlier version
+   concatenated everything into one `Vec` and called `sort_unstable`
+   on it instead -- measured costing 1.81s of a 2.67s total index
+   build at `full` (~47M entries), by far the dominant cost. Replacing
+   it with summing each thread's per-term counts into one histogram,
+   prefix-summing it into offsets, then copying each thread's entries
+   into their term's slot turns that into a single O(n) linear pass,
+   cutting the index-build phase to well under a third of its former
+   cost. `doc_offsets` is placed the same way, by direct `doc_id`
+   index rather than a per-term histogram.
 4. **Answer queries, in parallel.** BOOL queries are plain
    sorted-list set operations (`src/eval.rs`): AND = intersect, OR =
    union, NOT = difference, each O(n+m), applied left to right exactly
-   as spec section 3 defines (no precedence). PHRASE queries never
-   re-tokenize a document the way the reference does: candidates come
-   from intersecting every term's PRESENCE list (smallest first, to
-   shrink the working set fastest), then each candidate is verified
-   directly against the POSITION lists already built in step 2 --
-   anchored on whichever term has the fewest occurrences IN THAT
-   SPECIFIC DOCUMENT (so a document repeating one term heavily, the
-   spec's `w w w w` edge case, can't turn every occurrence into a
-   separate full scan of the others). The 50,000 queries are
-   independent given the shared, read-only index, so they're answered
-   across 12 threads too, each writing into its own slice of a result
-   buffer indexed by original query position, so output order never
-   depends on which thread finishes which query first.
+   as spec section 3 defines (no precedence). PHRASE queries find
+   candidates by intersecting every term's PRESENCE list (smallest
+   first, to shrink the working set fastest), then verify each
+   candidate -- a tiny fraction of all documents, never the whole
+   corpus -- by re-tokenizing its text sliced directly from the mmap
+   via `doc_offsets`, checking for `k` consecutive token positions
+   matching the query's terms in order (the same exact-match semantics
+   the reference uses; a token skipped for exceeding `MAX_TOKEN_LEN`
+   still consumes a position, so it correctly breaks adjacency even
+   though it emits no token). The 50,000 queries are independent given
+   the shared, read-only index, so they're answered across 12 threads
+   too, each writing into its own slice of a result buffer indexed by
+   original query position, so output order never depends on which
+   thread finishes which query first.
 
 Verified byte-identical (sha256) to the reference on seed 1 at `tiny`,
 `sample` and `full` scale, against the spec's own worked example, and
