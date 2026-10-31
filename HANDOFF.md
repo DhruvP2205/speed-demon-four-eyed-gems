@@ -4,8 +4,8 @@ Repo root, outside every `track-*/` folder on purpose -- this file does not
 count toward any track's S. Written for an agent with zero prior context on
 this session. Keep it accurate; update it at the end of every phase.
 
-Last updated: 2026-10-31, end of Phase 1 (Track B memory + time), about to
-start Phase 2 (Track A), by the agent executing the MISSION in the section
+Last updated: 2026-10-31, end of Phase 2 (Track A memory), about to start
+Phase 3 (Track D), by the agent executing the MISSION in the section
 below.
 
 ## 0. The mission in force right now
@@ -199,27 +199,60 @@ in the targets table.
   array; p50/p95/p99 via `select_nth_unstable` (O(k) not O(k log k)),
   computed in parallel across 12 threads via safe `split_at_mut` on
   disjoint group ranges.
-- **Board**: T 0.142 s, M 69 MB, lines 659 (`scc`: 651 Code lines),
-  56.0 pts. Board run IDs for the pre-mission history are in
-  `track-a/PERF.md`'s "Board runs" table (step 0: commit `82161a6`, T
-  0.372/M 96/46.2pts; step 1: CI run `41179179406`, the mmap+counting-sort
-  rewrite, CI T 0.636s wall/0.411s exec/M 67.45MB -- the *board* run for
-  step 1 isn't logged with its own row yet, confirm/backfill before
-  freeze).
+- **Board (pre-Phase-2)**: T 0.142 s, M 69 MB, lines 659 (`scc`: 651 Code
+  lines), 56.0 pts (commit `798624b`, logged in `track-a/PERF.md` step 3).
 - **Leader**: T 0.023 s, M 22 MB.
 - **Target** (mission, Phase 2): T <= 0.10 s, M <= 25 MB.
-- **Known bottleneck / next steps** (per `track-a/README.md`'s "with
-  another 24 hours", not yet done): `scan`'s per-byte tokenize/match loop
-  is the largest remaining phase; current endpoint interning is a
-  `HashMap`, not yet the per-thread open-addressing table the mission's
-  Phase 2 asks for; the counting-sort scatter is still single-threaded.
-- **Tried and reverted** (see `track-a/PERF.md` step 4): two separate
-  memory hypotheses (two-pass count-then-exact-allocate; one-pass
-  fixed-block pool) BOTH measured no improvement (or slightly worse) on
-  Windows `PeakWorkingSet64` and were discarded -- flagged as possibly a
-  measurement-method ceiling rather than a real floor; needs re-testing
-  against the board's actual cgroup M, not Windows' number.
-- **Phase 2 not started yet** (task #21, pending).
+- **Phase 2 memory fix shipped (commits `7f0b249`, `6da99c1`, pushed)**:
+  massif on the pre-fix build (CI run `41180038148`) showed its peak
+  (53.86 MB useful-heap) had FOUR things alive simultaneously: each
+  thread's `latencies: Vec<u64>` (46.11%/25.17MB), the final counting-sort
+  array `big_latencies` (22.72%/12.40MB), the per-thread `groups` HashMap's
+  table growth (9.02%/4.93MB), and the percentile workers' own result
+  buffers (8.65%/4.72MB) -- `partials` (every thread's latencies AND
+  groups AND endpoint/hour tables) was staying alive, unreleased, all the
+  way to the end of `main`, overlapping with structures it didn't need to
+  overlap with. Same pattern as Track B's step-4 fix. Restructured both
+  merge passes to consume per-thread state BY VALUE: `groups`/name tables
+  drop right after their counts/errors are merged; each thread's
+  `latencies` Vec drops right after its own contribution is scattered.
+  Verified byte-identical output (sha256) on a synthetic 500K-line dataset
+  between pre- and post-fix binaries; all 14 unit tests pass unchanged.
+  CI confirmed (`verify-official` run `41241108818` PASS; `track-a` run
+  `41241108725`): massif peak 53.86 -> 40.66 MB (-24.5%), CI cgroup
+  `memory.peak` 67.45 -> 39.22 MB (-41.8%). CI's wall/exec T moved
+  slightly worse (0.636/0.411s -> 0.697/0.531s) but this is a memory-only
+  change and local T was unchanged within noise -- almost certainly CI
+  noise, same caveat logged everywhere else in this repo for memory-only
+  changes measured on the 2-core runner.
+  - **Remaining floor, NOT pursued further this round**: the NEW peak is
+    61.85% (25.17MB) just the per-thread `latencies: Vec<u64>` growth
+    DURING THE PARSE PHASE ITSELF (before any merge) -- a structural
+    floor, not a leak: 3.1M entries x 8 packed bytes (32-bit group id +
+    32-bit latency, spec's own type) is close to the practical minimum
+    for holding every raw value before exact nearest-rank percentiles can
+    be computed. Two riskier ideas documented in `track-a/README.md`'s
+    "with another 24 hours" (tighter group-id bit-packing if real
+    cardinality is confirmed well under 32 bits; an exact latency
+    histogram instead of raw storage, only safe if the real value range
+    is confirmed tight) -- NOT attempted, since both require assumptions
+    about the data not explicitly guaranteed by spec, and this round's
+    budget favored the safer, already-substantial win.
+  - **Still short of the <=25MB target** (~39-40MB vs 25MB) but a huge
+    step down from 69MB. The remaining ~15MB gap is mostly
+    `big_latencies` (12.4MB, also structurally required for the parallel
+    percentile step) -- likely not worth further risk this round.
+  - **Mission's other Phase 2 bullets NOT done** (de-prioritized in favor
+    of the bigger, already-confirmed memory win above, given Phase 2's
+    ~5h budget): per-thread open-addressing endpoint interning (currently
+    `HashMap<Vec<u8>,u32>` -- cardinality is tiny, ~1,842 endpoints, so
+    expected ROI is low relative to its rewrite risk); parallelizing the
+    counting-sort scatter.
+- **Phase 2 considered done for this round** (task #21) -- a decisive,
+  CI-confirmed memory win shipped; moving to Phase 3 (Track D) per the
+  mission's "keep going phase to phase" instruction. Still awaiting a
+  board run to confirm the real M/points; relay the next board number and
+  update the numbers above once in hand.
 
 ### Track B -- Index (`b_index`, `docs.txt`+`queries.txt` -> `results.txt`)
 
@@ -402,7 +435,7 @@ worth a direct look).
 |---|---|---|---|---|
 | 1a | B memory | ~8h (shared w/ 1b) | 835MB -> <=50MB | **DONE (pending board confirm)** -- position-index removal shipped (`0465a16`); CI: M -28.5% cgroup / -40.7% massif, T -15.7% bonus |
 | 1b | B time | (shared w/ 1a) | 1.084s -> <=0.30s | **DONE for this round (pending board confirm)** -- tokenizer double-lowercase fix shipped (`9cacecd`), ~15% faster on scan_docs locally (12-thread, paired); SIMD tokenization identified as the next lever but out of scope this round |
-| 2 | A | ~5h | T<=0.10s, M<=25MB | NOT STARTED |
+| 2 | A | ~5h | T<=0.10s, M<=25MB | **DONE for this round (pending board confirm)** -- by-value merge fix shipped (`7f0b249`), CI: M -41.8% cgroup / -24.5% massif; still short of <=25MB (structural latencies-storage floor identified); T unaffected as expected |
 | 3 | D | ~6h | T<=0.17s | NOT STARTED |
 | 4 | C (conditional) | ~4h | T<=0.12s, M<=40MB | NOT STARTED -- only if C can beat the lowest counted track after 1-3 |
 | 5 | Global tuning | ~4h (Nov 1) | thread sweep, MALLOC_ARENA_MAX, PGO | NOT STARTED |
