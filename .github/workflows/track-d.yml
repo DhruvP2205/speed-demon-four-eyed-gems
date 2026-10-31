@@ -1,0 +1,121 @@
+# CI verification + Linux cgroup memory.peak measurement for Track D, full
+# scale, seed 1. See track-a.yml's header comment for the full rationale
+# (same pattern, different track).
+name: track-d
+
+on:
+  push:
+    branches: [speed-demon]
+    paths:
+      - "track-d/**"
+      - "ci/**"
+      - ".github/workflows/track-d.yml"
+  workflow_dispatch:
+
+jobs:
+  full-scale:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Run cargo test (release)
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          cd track-d
+          cargo test --release
+
+      - name: Clone the official event repo (generators + reference)
+        timeout-minutes: 5
+        run: git clone --depth=1 https://github.com/hackathon-raptors/speed-demon-2026.git official
+
+      - name: Generate full-scale seed-1 data
+        timeout-minutes: 15
+        run: |
+          mkdir -p data
+          python official/generators/d_traverse.py --seed 1 --scale full --out data
+          ls -la data/
+
+      - name: Run the official reference and hash its output
+        timeout-minutes: 30
+        run: |
+          mkdir -p ref_out
+          python official/reference/d_traverse.py --data data --out ref_out
+          sha256sum ref_out/distances.txt | awk '{print $1}' > expected.sha256
+          echo "expected sha256: $(cat expected.sha256)"
+
+      - name: Determine runner CPU count and cpuset
+        id: cpus
+        run: |
+          N=$(nproc)
+          echo "cpuset=0-$((N - 1))" >> "$GITHUB_OUTPUT"
+
+      - name: Build the submission image (exact, unmodified Dockerfile)
+        timeout-minutes: 10
+        run: docker build --network=none -t track-d:submission track-d
+
+      - name: Run the submission image with the exact scoring sandbox flags
+        timeout-minutes: 10
+        env:
+          CPUSET: ${{ steps.cpus.outputs.cpuset }}
+        run: |
+          mkdir -p out
+          bash ci/docker-run.sh track-d:submission data out
+          GOT=$(sha256sum out/distances.txt | awk '{print $1}')
+          WANT=$(cat expected.sha256)
+          echo "got:  $GOT"
+          echo "want: $WANT"
+          [ "$GOT" = "$WANT" ] || { echo "HASH MISMATCH"; exit 1; }
+          echo "submission image hash matches the official reference"
+
+      # Heap profiling (valgrind massif), run natively on the runner. No
+      # source changes: debug symbols come from an env var override of the
+      # release profile, not from editing track-d/Cargo.toml.
+      - name: Install valgrind
+        timeout-minutes: 5
+        run: sudo apt-get update && sudo apt-get install -y valgrind
+
+      - name: Build a debug-symbol release binary for profiling only
+        timeout-minutes: 10
+        run: |
+          cd track-d
+          CARGO_PROFILE_RELEASE_DEBUG=true cargo build --release
+
+      - name: Heap profile (valgrind massif) at full scale
+        timeout-minutes: 60
+        run: |
+          mkdir -p prof_out
+          valgrind --tool=massif --pages-as-heap=no --massif-out-file=/tmp/massif.out \
+            track-d/target/release/solution data prof_out
+          ms_print /tmp/massif.out > /tmp/massif_report.txt
+          echo "=== Track D massif report (peak heap + allocation sites) ==="
+          cat /tmp/massif_report.txt
+
+      - name: Assemble the bench-only build context (mem_wrapper.sh stays outside track-d/)
+        run: |
+          rm -rf /tmp/bench-ctx && mkdir -p /tmp/bench-ctx/track-d
+          cp -r track-d/. /tmp/bench-ctx/track-d/
+          cp ci/mem_wrapper.sh /tmp/bench-ctx/track-d/mem_wrapper.sh
+          cp ci/Dockerfile.bench /tmp/bench-ctx/track-d/Dockerfile
+
+      - name: Build the bench image
+        timeout-minutes: 10
+        run: docker build --network=none -t track-d:bench /tmp/bench-ctx/track-d
+
+      - name: bench.sh at full scale (wall T, exec T, cgroup memory.peak)
+        timeout-minutes: 20
+        env:
+          CPUSET: ${{ steps.cpus.outputs.cpuset }}
+        run: |
+          mkdir -p bench_out
+          bash ci/bench.sh track-d:bench data bench_out expected.sha256 D distances.txt 2>&1 | tee bench_output.txt
+
+      - name: Report M
+        run: |
+          echo "=== Track D, full scale, seed 1, Linux cgroup memory.peak ==="
+          grep "^FINAL" bench_output.txt

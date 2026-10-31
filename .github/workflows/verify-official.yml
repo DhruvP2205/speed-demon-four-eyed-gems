@@ -1,0 +1,204 @@
+# End-to-end verification against the ACTUAL official full-scale seed-1
+# dataset (downloaded from S3, SHA256-checked against SHA256SUMS.json),
+# not our own regenerated copies -- plus a holdout-robustness check against
+# seeds the solutions were never tuned against. No solution code is
+# touched here; this only verifies. Lives outside every track-*/ folder,
+# so none of it counts toward S.
+#
+# official-seed1: downloads each track's real seed-1 input files, verifies
+#   them byte-for-byte against the officially published hashes, then runs
+#   the starter's own check.py (build --network=none, board sandbox run
+#   flags, --expected the official output hash) for the correctness gate,
+#   and separately measures real Linux cgroup memory.peak the same way the
+#   other workflows in this repo do (check.py itself only reports wall
+#   time, not memory -- see its own --rm invocation).
+#
+# holdout-robustness: seeds 2/3/4 at sample scale, plus seed 2 again at
+#   full scale, generated fresh via the official generators with their
+#   own reference run for the ground-truth hash -- seeds the code was
+#   never hash-matched against before, as a sanity check that nothing
+#   is overfit to seed 1 specifically.
+name: verify-official
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [speed-demon]
+    paths:
+      - ".github/workflows/verify-official.yml"
+      - "ci/**"
+      - "track-a/**"
+      - "track-c/**"
+      - "track-d/**"
+
+jobs:
+  official-seed1:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - track: a
+            files: "requests.log"
+            url_base: "https://s3.amazonaws.com/raptors.dev/speeddemon.dev/2026/data/track-a/full-seed1"
+          - track: c
+            files: "records.csv regions.csv"
+            url_base: "https://s3.amazonaws.com/raptors.dev/speeddemon.dev/2026/data/track-c/full-seed1"
+          - track: d
+            files: "graph.txt queries.txt"
+            url_base: "https://s3.amazonaws.com/raptors.dev/speeddemon.dev/2026/data/track-d/full-seed1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Fetch SHA256SUMS.json
+        timeout-minutes: 5
+        run: curl -sSf -o sha256sums.json https://s3.amazonaws.com/raptors.dev/speeddemon.dev/2026/data/SHA256SUMS.json
+
+      - name: Download the official seed-1 files for track ${{ matrix.track }}
+        timeout-minutes: 10
+        run: |
+          mkdir -p data
+          for f in ${{ matrix.files }}; do
+            curl -sSf -o "data/$f" "${{ matrix.url_base }}/$f"
+          done
+          ls -la data/
+
+      - name: Verify every downloaded file against SHA256SUMS.json (fail on any mismatch)
+        run: |
+          python3 -c "
+          import json
+          data = json.load(open('sha256sums.json'))
+          inputs = data['tracks']['${{ matrix.track }}']['inputs_sha256']
+          with open('expected_inputs.sha256sum', 'w') as out:
+              for name, digest in inputs.items():
+                  out.write(f'{digest}  data/{name}\n')
+          "
+          cat expected_inputs.sha256sum
+          sha256sum -c expected_inputs.sha256sum
+
+      - name: Run the official check.py (offline build, board sandbox flags, full expected hash)
+        run: |
+          EXPECTED=$(python3 -c "import json; print(json.load(open('sha256sums.json'))['tracks']['${{ matrix.track }}']['expected_output_sha256'][0])")
+          echo "expected (full, from SHA256SUMS.json): $EXPECTED"
+          python3 check.py ${{ matrix.track }} --data data --expected "$EXPECTED" 2>&1 | tee check_output.txt
+
+      - name: Determine runner CPU count and cpuset (for the separate M measurement)
+        id: cpus
+        run: |
+          N=$(nproc)
+          echo "cpuset=0-$((N - 1))" >> "$GITHUB_OUTPUT"
+
+      - name: Assemble a bench-only build context (mem_wrapper.sh stays outside track-${{ matrix.track }}/)
+        run: |
+          rm -rf /tmp/bench-ctx && mkdir -p /tmp/bench-ctx/track-${{ matrix.track }}
+          cp -r track-${{ matrix.track }}/. /tmp/bench-ctx/track-${{ matrix.track }}/
+          cp ci/mem_wrapper.sh /tmp/bench-ctx/track-${{ matrix.track }}/mem_wrapper.sh
+          cp ci/Dockerfile.bench /tmp/bench-ctx/track-${{ matrix.track }}/Dockerfile
+
+      - name: Build the bench image
+        timeout-minutes: 10
+        run: docker build --network=none -t track-${{ matrix.track }}:bench /tmp/bench-ctx/track-${{ matrix.track }}
+
+      - name: bench.sh against the SAME official data (real Linux cgroup memory.peak)
+        timeout-minutes: 15
+        env:
+          CPUSET: ${{ steps.cpus.outputs.cpuset }}
+        run: |
+          EXPECTED=$(python3 -c "import json; print(json.load(open('sha256sums.json'))['tracks']['${{ matrix.track }}']['expected_output_sha256'][0])")
+          echo "$EXPECTED" > expected.sha256
+          OUTPUT_NAME=$(python3 -c "import json; print(json.load(open('sha256sums.json'))['tracks']['${{ matrix.track }}']['output'])")
+          mkdir -p bench_out
+          bash ci/bench.sh "track-${{ matrix.track }}:bench" data bench_out expected.sha256 ${{ matrix.track }} "$OUTPUT_NAME" 2>&1 | tee bench_output.txt
+
+      - name: Final summary (PASS/FAIL, T, M) -- official seed-1, downloaded and SHA256-verified
+        run: |
+          echo "=== Track ${{ matrix.track }}: OFFICIAL full-scale seed-1 data, downloaded from S3 ==="
+          if grep -q "^PASS" check_output.txt; then
+            echo "CORRECTNESS: PASS (check.py: offline build, board sandbox run, official expected hash)"
+          else
+            echo "CORRECTNESS: FAIL"
+            cat check_output.txt
+            exit 1
+          fi
+          grep "^time" check_output.txt
+          grep "^FINAL" bench_output.txt
+
+  holdout-robustness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        track: [a, c, d]
+        seed_scale: ["2-sample", "3-sample", "4-sample", "2-full"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Parse seed/scale and map track to module/output names
+        id: params
+        run: |
+          IFS=- read -r SEED SCALE <<< "${{ matrix.seed_scale }}"
+          echo "seed=$SEED" >> "$GITHUB_OUTPUT"
+          echo "scale=$SCALE" >> "$GITHUB_OUTPUT"
+          case "${{ matrix.track }}" in
+            a) echo "module=a_ingest" >> "$GITHUB_OUTPUT"; echo "output=summary.txt" >> "$GITHUB_OUTPUT" ;;
+            c) echo "module=c_join" >> "$GITHUB_OUTPUT"; echo "output=aggregates.txt" >> "$GITHUB_OUTPUT" ;;
+            d) echo "module=d_traverse" >> "$GITHUB_OUTPUT"; echo "output=distances.txt" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - name: Clone the official event repo (generators + reference)
+        timeout-minutes: 5
+        run: git clone --depth=1 https://github.com/hackathon-raptors/speed-demon-2026.git official
+
+      - name: Generate data (seed ${{ steps.params.outputs.seed }}, scale ${{ steps.params.outputs.scale }}) -- never hash-matched against before
+        timeout-minutes: 15
+        run: |
+          mkdir -p data
+          python official/generators/${{ steps.params.outputs.module }}.py --seed ${{ steps.params.outputs.seed }} --scale ${{ steps.params.outputs.scale }} --out data
+          ls -la data/
+
+      - name: Run the official reference for the ground-truth hash
+        timeout-minutes: 20
+        run: |
+          mkdir -p ref_out
+          python official/reference/${{ steps.params.outputs.module }}.py --data data --out ref_out
+          EXPECTED=$(sha256sum "ref_out/${{ steps.params.outputs.output }}" | awk '{print $1}')
+          echo "expected sha256: $EXPECTED"
+          echo "$EXPECTED" > expected.sha256
+
+      - name: Build the submission image (exact, unmodified Dockerfile)
+        timeout-minutes: 10
+        run: docker build --network=none -t "track-${{ matrix.track }}:submission" "track-${{ matrix.track }}"
+
+      - name: Determine runner CPU count and cpuset
+        id: cpus
+        run: |
+          N=$(nproc)
+          echo "cpuset=0-$((N - 1))" >> "$GITHUB_OUTPUT"
+
+      - name: Run with the exact scoring sandbox flags and compare
+        timeout-minutes: 15
+        env:
+          CPUSET: ${{ steps.cpus.outputs.cpuset }}
+        run: |
+          mkdir -p out
+          bash ci/docker-run.sh "track-${{ matrix.track }}:submission" data out
+          GOT=$(sha256sum "out/${{ steps.params.outputs.output }}" | awk '{print $1}')
+          WANT=$(cat expected.sha256)
+          echo "got:  $GOT"
+          echo "want: $WANT"
+          if [ "$GOT" = "$WANT" ]; then
+            echo "PASS track-${{ matrix.track }} seed=${{ steps.params.outputs.seed }} scale=${{ steps.params.outputs.scale }}"
+          else
+            echo "FAIL track-${{ matrix.track }} seed=${{ steps.params.outputs.seed }} scale=${{ steps.params.outputs.scale }}"
+            exit 1
+          fi

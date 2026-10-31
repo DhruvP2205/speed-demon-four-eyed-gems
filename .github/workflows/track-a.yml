@@ -1,0 +1,131 @@
+# CI verification + Linux cgroup memory.peak measurement for Track A, full
+# scale, seed 1. Runs on a GitHub-hosted runner, NOT the scoring box (i5-
+# 13500, 6 P-cores/12 threads) -- different CPU, fewer cores, shared/
+# variable performance. T here is NOT comparable to the board's T; M is a
+# real Linux cgroup.peak reading, which Windows (`PeakWorkingSet64`) has
+# proven unreliable for validating memory changes against -- see track-d's
+# PERF.md. Builds the exact, unmodified submission Dockerfile for the
+# correctness gate; a separate bench-only image (mem_wrapper.sh, assembled
+# from an ephemeral context, never copied into track-a/) is built only for
+# the memory measurement, per ci/Dockerfile.bench's own header comment.
+name: track-a
+
+on:
+  push:
+    branches: [speed-demon]
+    paths:
+      - "track-a/**"
+      - "ci/**"
+      - ".github/workflows/track-a.yml"
+  workflow_dispatch:
+
+jobs:
+  full-scale:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Run cargo test (release)
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          cd track-a
+          cargo test --release
+
+      - name: Clone the official event repo (generators + reference)
+        timeout-minutes: 5
+        run: git clone --depth=1 https://github.com/hackathon-raptors/speed-demon-2026.git official
+
+      - name: Generate full-scale seed-1 data
+        timeout-minutes: 15
+        run: |
+          mkdir -p data
+          python official/generators/a_ingest.py --seed 1 --scale full --out data
+          ls -la data/
+
+      - name: Run the official reference and hash its output
+        timeout-minutes: 15
+        run: |
+          mkdir -p ref_out
+          python official/reference/a_ingest.py --data data --out ref_out
+          sha256sum ref_out/summary.txt | awk '{print $1}' > expected.sha256
+          echo "expected sha256: $(cat expected.sha256)"
+
+      - name: Determine runner CPU count and cpuset
+        id: cpus
+        run: |
+          N=$(nproc)
+          echo "runner has $N logical CPUs -- using cpuset 0-$((N - 1))"
+          echo "cpuset=0-$((N - 1))" >> "$GITHUB_OUTPUT"
+
+      - name: Build the submission image (exact, unmodified Dockerfile)
+        timeout-minutes: 10
+        run: docker build --network=none -t track-a:submission track-a
+
+      - name: Run the submission image with the exact scoring sandbox flags
+        timeout-minutes: 10
+        env:
+          CPUSET: ${{ steps.cpus.outputs.cpuset }}
+        run: |
+          mkdir -p out
+          bash ci/docker-run.sh track-a:submission data out
+          GOT=$(sha256sum out/summary.txt | awk '{print $1}')
+          WANT=$(cat expected.sha256)
+          echo "got:  $GOT"
+          echo "want: $WANT"
+          [ "$GOT" = "$WANT" ] || { echo "HASH MISMATCH"; exit 1; }
+          echo "submission image hash matches the official reference"
+
+      # Heap profiling (valgrind massif), run natively on the runner (not
+      # through Docker -- valgrind needs to run directly against the
+      # binary). No source changes: debug symbols come from an env var
+      # override of the release profile, not from editing track-a/Cargo.toml.
+      # ci/ keeps this out of the submitted track folder entirely.
+      - name: Install valgrind
+        timeout-minutes: 5
+        run: sudo apt-get update && sudo apt-get install -y valgrind
+
+      - name: Build a debug-symbol release binary for profiling only
+        timeout-minutes: 10
+        run: |
+          cd track-a
+          CARGO_PROFILE_RELEASE_DEBUG=true cargo build --release
+
+      - name: Heap profile (valgrind massif) at full scale
+        timeout-minutes: 60
+        run: |
+          mkdir -p prof_out
+          valgrind --tool=massif --pages-as-heap=no --massif-out-file=/tmp/massif.out \
+            track-a/target/release/solution data prof_out
+          ms_print /tmp/massif.out > /tmp/massif_report.txt
+          echo "=== Track A massif report (peak heap + allocation sites) ==="
+          cat /tmp/massif_report.txt
+
+      - name: Assemble the bench-only build context (mem_wrapper.sh stays outside track-a/)
+        run: |
+          rm -rf /tmp/bench-ctx && mkdir -p /tmp/bench-ctx/track-a
+          cp -r track-a/. /tmp/bench-ctx/track-a/
+          cp ci/mem_wrapper.sh /tmp/bench-ctx/track-a/mem_wrapper.sh
+          cp ci/Dockerfile.bench /tmp/bench-ctx/track-a/Dockerfile
+
+      - name: Build the bench image
+        timeout-minutes: 10
+        run: docker build --network=none -t track-a:bench /tmp/bench-ctx/track-a
+
+      - name: bench.sh at full scale (wall T, exec T, cgroup memory.peak)
+        timeout-minutes: 20
+        env:
+          CPUSET: ${{ steps.cpus.outputs.cpuset }}
+        run: |
+          mkdir -p bench_out
+          bash ci/bench.sh track-a:bench data bench_out expected.sha256 A summary.txt 2>&1 | tee bench_output.txt
+
+      - name: Report M
+        run: |
+          echo "=== Track A, full scale, seed 1, Linux cgroup memory.peak ==="
+          grep "^FINAL" bench_output.txt

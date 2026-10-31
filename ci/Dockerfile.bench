@@ -1,0 +1,19 @@
+# CI-only bench image: identical build to the submission Dockerfile, except
+# the entrypoint is wrapped by mem_wrapper.sh so bench.sh can recover wall
+# time and this container's own cgroup memory.peak before it tears down.
+# NEVER shipped as the submission image (mem_wrapper.sh must not count
+# toward S) -- built from an ephemeral context assembled by CI that copies
+# the track's own source plus this file and mem_wrapper.sh, never from
+# inside the track directory itself. All three tracks' binaries are named
+# "solution" (see each track's Cargo.toml), so one template covers all of
+# them.
+FROM rust:1-slim-trixie@sha256:1a939748a7cbab172de91a014e3804a97af1394a8c844faa67fce9401c4e40fb AS build
+WORKDIR /src
+COPY . .
+ENV RUSTFLAGS="-C target-cpu=x86-64-v3"
+RUN cargo build --release --offline
+
+FROM debian:13-slim@sha256:62bd423aeee912639ca8ee681c2b762cb3e25137e0a92b20be455898a9f034ad
+COPY --from=build /src/target/release/solution /app/solution
+COPY mem_wrapper.sh /mem_wrapper.sh
+ENTRYPOINT ["/mem_wrapper.sh", "/app/solution"]

@@ -1,2 +1,10 @@
 .out/
 data/
+target/
+**/target/
+*.massif.out
+massif.out*
+massif_report.txt
+bench_out/
+bench_output.txt
+check_output.txt
