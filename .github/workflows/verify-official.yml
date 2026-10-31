@@ -28,6 +28,7 @@ on:
       - ".github/workflows/verify-official.yml"
       - "ci/**"
       - "track-a/**"
+      - "track-b/**"
       - "track-c/**"
       - "track-d/**"
 
@@ -42,6 +43,9 @@ jobs:
           - track: a
             files: "requests.log"
             url_base: "https://s3.amazonaws.com/raptors.dev/speeddemon.dev/2026/data/track-a/full-seed1"
+          - track: b
+            files: "docs.txt queries.txt"
+            url_base: "https://s3.amazonaws.com/raptors.dev/speeddemon.dev/2026/data/track-b/full-seed1"
           - track: c
             files: "records.csv regions.csv"
             url_base: "https://s3.amazonaws.com/raptors.dev/speeddemon.dev/2026/data/track-c/full-seed1"
@@ -134,7 +138,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        track: [a, c, d]
+        track: [a, b, c, d]
         seed_scale: ["2-sample", "3-sample", "4-sample", "2-full"]
     steps:
       - uses: actions/checkout@v4
@@ -151,6 +155,7 @@ jobs:
           echo "scale=$SCALE" >> "$GITHUB_OUTPUT"
           case "${{ matrix.track }}" in
             a) echo "module=a_ingest" >> "$GITHUB_OUTPUT"; echo "output=summary.txt" >> "$GITHUB_OUTPUT" ;;
+            b) echo "module=b_index" >> "$GITHUB_OUTPUT"; echo "output=results.txt" >> "$GITHUB_OUTPUT" ;;
             c) echo "module=c_join" >> "$GITHUB_OUTPUT"; echo "output=aggregates.txt" >> "$GITHUB_OUTPUT" ;;
             d) echo "module=d_traverse" >> "$GITHUB_OUTPUT"; echo "output=distances.txt" >> "$GITHUB_OUTPUT" ;;
           esac

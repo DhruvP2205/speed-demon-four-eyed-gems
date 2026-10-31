@@ -2,7 +2,21 @@
 
 Every step from the reference to your final version, each with the live-board run ID that measured it. Judges check that the run IDs exist and that each change moved the way you say it did.
 
+## Pre-board development measurements
+
+Everything below predates any board run: local-machine timings, used to reason about and validate changes before this code ever reached the board. Not yet confirmed against the board's own cgroup `memory.peak` or its 12 P-cores -- treat every number here as directional only.
+
 | Step | Change | Run ID | T (s) | M (MB) | Points |
 |---|---|---|---|---|---|
-| 0 | The reference, unchanged | | 56.35 | 2,200 | 0 |
-| 1 | | | | | |
+| 0 | The reference, unchanged (single-threaded Python, full inverted index over the whole 600,000-word vocabulary, Python `set` operations for BOOL, re-tokenize-and-scan for PHRASE). | | 56.35 (M4 Pro, spec's own figure) / 46.08 (measured locally, this dev machine) | 2,200 | 0 |
+| 1 | First Rust port: `queries.txt` parsed first (`src/query_parse.rs`) to find exactly which ~75,700 terms (of 600,000) the 50,000 queries actually use -- spec section 3 and section 8 point 4 both call this a legitimate strategy, not a shortcut. `docs.txt` mapped via `mmap` and scanned in parallel (12 threads, `src/index.rs`), tokenizing every document (`src/tokenize.rs`, byte-based, spec section 2.2's exact rule, never needs UTF-8 decoding) but storing postings only for needed terms: PRESENCE (sorted doc-id list, for BOOL) for every needed term, POSITION (per-document token positions, for PHRASE) only for terms used in >=1 phrase query. BOOL answered via sorted-list AND/OR/NOT (`src/eval.rs`); PHRASE answered directly against position lists -- never re-tokenizing a candidate document the way the reference does. Hash-matched byte-for-byte against the official reference on the spec's own worked example, `tiny`, `sample` and `full` scale (seed 1), and holdout seeds 2/3 at `sample` scale. | *(pending first push)* | 3.0-3.1 (local, full scale, not the board) | *(not yet measured)* | |
+| 2 | Diagnosis (temporary phase instrumentation, reverted before commit): of the 3.0s total, `build_index` took 2.67s (89%) -- `scan_docs` (parallel tokenize+match) 512ms, then a SINGLE-THREADED `sort_unstable` on the merged presence+position entries (~22.2M + ~25.0M = ~47.2M entries at `full`) took 1.81s, by far the single biggest cost anywhere in the program. | *(local diagnosis, not pushed on its own)* | | | |
+| 3 | Replaced the sort with a counting-sort scatter: each thread already pushes its presence/position entries in ascending `(doc_id)` / `(doc_id, position)` order (documents are scanned in file order, and thread ranges are themselves in ascending doc-id order), so concatenating thread 0's, then thread 1's, ... entries for a given term is ALREADY fully sorted -- no comparison sort needed at all, just sum each thread's per-term counts into a histogram, prefix-sum it into offsets, then copy (O(n), one linear pass) each thread's entries into their term's slot. `build_index` dropped 2.67s -> 0.80-0.87s; TOTAL dropped 3.0-3.1s -> 1.2-1.3s (~2.4x faster). Also swapped the term-lookup `HashMap`'s hasher from std's default (SipHash, DoS-resistant, unneeded here since the table is built from the query file's own terms) to a hand-rolled FNV-1a (`src/fnv_hasher.rs`, no new dependency) -- a small additional win (`scan_docs` 512ms -> ~470ms), small enough to show the per-byte tokenization loop itself, not the hashmap lookup, is `scan_docs`'s real floor. Hash-matched again on every dataset in step 1 after both changes. | *(pending first push)* | 1.2-1.4 (local, full scale, not the board; ~33-35x faster than the reference's 46.08s on this same machine) | *(not yet measured)* | |
+
+## Board runs
+
+This repo is what the board actually builds. Every row below must carry a real board run ID -- no board run yet (this is a new track in this repo).
+
+| Step | Change | Board run ID | T (s) | M (MB) | Points |
+|---|---|---|---|---|---|
+| | *(awaiting first board run)* | | | | |
