@@ -1,18 +1,134 @@
-//! Compact CSR (compressed sparse row) adjacency, built via counting
-//! sort -- same idiom as reference/oracle_d's own CSR build (not
-//! reinvented independently; this track's oracle already established
-//! the pattern is correct and fast enough for this scale).
+//! Forward-only CSR (compressed sparse row) adjacency. Only `u`'s
+//! out-edges are needed: queries are answered with a single
+//! unidirectional Dijkstra from `s`.
 //!
-//! Two CSRs are built from the same edge list: `forward` (grouped by
-//! `u`, giving each node's out-edges -- used by the forward half of
-//! bidirectional Dijkstra) and `reverse` (grouped by `v`, storing each
-//! edge's `u` endpoint -- used by the backward half, which conceptually
-//! walks the graph with every edge direction flipped).
+//! `build_forward_and_in_edge` builds the CSR AND the `has_in_edge`
+//! bitmap directly off the mmap'd edge byte ranges, in two parallel
+//! passes, without ever storing the parsed `(u, v, w)` triples: phase
+//! instrumentation on the previous (single-threaded, counting-sort
+//! over pre-parsed triples) version found it costing ~260ms by
+//! itself, more than either the parse phase or the (already well-
+//! parallelized) query phase -- see PERF.md.
+
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+
+use crate::parse::{parse_uint, skip_non_digits};
 
 pub struct Csr {
     pub offsets: Vec<u32>,
     pub adj_node: Vec<u32>,
     pub adj_weight: Vec<u32>,
+}
+
+/// Builds the forward CSR and the `has_in_edge` bitmap directly off
+/// the mmap'd edge byte ranges, in two parallel passes that never
+/// store the parsed `(u, v, w)` triples at all.
+///
+/// Pass 1 (one thread per range): parse only `u` per line -- skip
+/// straight to the next line without even parsing `v`/`w` -- and
+/// atomically increment a shared per-node degree counter
+/// (`Relaxed`: counting doesn't need ordering with anything else,
+/// only the final total after every thread joins matters). A single
+/// O(n) sequential prefix sum over those counts gives `offsets`.
+///
+/// Pass 2 (same ranges, re-parsed): parse the full triple, atomically
+/// claim the next free slot within node `u`'s own `[offsets[u],
+/// offsets[u+1])` range via a per-node atomic cursor (seeded from
+/// `offsets`), and store `(v, w)` into exactly that slot. `adj_node`/
+/// `adj_weight` are `Vec<AtomicU32>` during this phase so concurrent
+/// stores from different threads are well-defined Rust, even though
+/// the whole array is shared -- the cursor guarantees no two edges
+/// (on any thread) ever claim the same slot, so no two threads ever
+/// touch the same element; only DIFFERENT elements are ever written
+/// concurrently, which plain atomic stores (not even a lock) make
+/// safe. Converted to plain `Vec<u32>` once the parallel section ends
+/// (`Atomic*::into_inner`, a safe O(m) pass, no unsafe anywhere in
+/// this function).
+pub fn build_forward_and_in_edge(
+    n: usize,
+    m: usize,
+    data: &[u8],
+    ranges: &[(usize, usize)],
+) -> (Csr, Vec<bool>) {
+    let degree: Vec<AtomicU32> = (0..n).map(|_| AtomicU32::new(0)).collect();
+    std::thread::scope(|scope| {
+        for &(start, end) in ranges {
+            let degree_ref = &degree;
+            scope.spawn(move || {
+                let mut i = start;
+                while i < end {
+                    i = skip_non_digits(data, i);
+                    if i >= end {
+                        break;
+                    }
+                    let (u, ni) = parse_uint(data, i);
+                    degree_ref[u as usize].fetch_add(1, Ordering::Relaxed);
+                    // `v`/`w` don't matter for counting -- skip straight
+                    // to the next line without parsing them at all.
+                    i = match data[ni.min(end)..end].iter().position(|&b| b == b'\n') {
+                        Some(off) => ni + off + 1,
+                        None => end,
+                    };
+                }
+            });
+        }
+    });
+
+    let mut offsets = vec![0u32; n + 1];
+    for i in 0..n {
+        offsets[i + 1] = offsets[i] + degree[i].load(Ordering::Relaxed);
+    }
+    drop(degree);
+
+    let cursor: Vec<AtomicU32> = offsets[..n].iter().map(|&o| AtomicU32::new(o)).collect();
+    let adj_node: Vec<AtomicU32> = (0..m).map(|_| AtomicU32::new(0)).collect();
+    let adj_weight: Vec<AtomicU32> = (0..m).map(|_| AtomicU32::new(0)).collect();
+    let has_in_edge: Vec<AtomicBool> = (0..n).map(|_| AtomicBool::new(false)).collect();
+
+    std::thread::scope(|scope| {
+        for &(start, end) in ranges {
+            let cursor_ref = &cursor;
+            let adj_node_ref = &adj_node;
+            let adj_weight_ref = &adj_weight;
+            let has_in_edge_ref = &has_in_edge;
+            scope.spawn(move || {
+                let mut i = start;
+                while i < end {
+                    i = skip_non_digits(data, i);
+                    if i >= end {
+                        break;
+                    }
+                    let (u, ni) = parse_uint(data, i);
+                    let i2 = skip_non_digits(data, ni);
+                    let (v, ni2) = parse_uint(data, i2);
+                    let i3 = skip_non_digits(data, ni2);
+                    let (w, ni3) = parse_uint(data, i3);
+                    i = ni3;
+
+                    let pos = cursor_ref[u as usize].fetch_add(1, Ordering::Relaxed) as usize;
+                    adj_node_ref[pos].store(v, Ordering::Relaxed);
+                    adj_weight_ref[pos].store(w, Ordering::Relaxed);
+                    has_in_edge_ref[v as usize].store(true, Ordering::Relaxed);
+                }
+            });
+        }
+    });
+
+    let adj_node: Vec<u32> = adj_node.into_iter().map(AtomicU32::into_inner).collect();
+    let adj_weight: Vec<u32> = adj_weight.into_iter().map(AtomicU32::into_inner).collect();
+    let has_in_edge: Vec<bool> = has_in_edge
+        .into_iter()
+        .map(AtomicBool::into_inner)
+        .collect();
+
+    (
+        Csr {
+            offsets,
+            adj_node,
+            adj_weight,
+        },
+        has_in_edge,
+    )
 }
 
 impl Csr {
@@ -24,161 +140,147 @@ impl Csr {
     }
 }
 
-/// Build the forward CSR (grouped by `u`): `adj_node`/`adj_weight` at
-/// `offsets[u]..offsets[u+1]` give node `u`'s out-edges `(v, w)`.
-///
-/// `us`/`vs`/`ws` may be split across several same-length slices (one
-/// per parsing thread, in any order) -- passed as a slice of triples
-/// of slices rather than one concatenated `Vec` to avoid an extra O(m)
-/// copy merging them first.
-pub fn build_forward(n: usize, m: usize, chunks: &[(Vec<u32>, Vec<u32>, Vec<u32>)]) -> Csr {
-    build_csr(n, m, chunks, true)
-}
-
-/// Build the reverse CSR (grouped by `v`): `adj_node`/`adj_weight` at
-/// `offsets[v]..offsets[v+1]` give the predecessors `(u, w)` of edges
-/// `u -> v` -- i.e. node `v`'s in-edges, stored as if the graph's
-/// edges were all flipped. This is exactly what the backward half of
-/// bidirectional Dijkstra needs to walk "against" the original edge
-/// direction.
-pub fn build_reverse(n: usize, m: usize, chunks: &[(Vec<u32>, Vec<u32>, Vec<u32>)]) -> Csr {
-    build_csr(n, m, chunks, false)
-}
-
-/// `forward`: group by `u`, storing `v` as the neighbor (out-edges).
-/// `!forward`: group by `v`, storing `u` as the neighbor (in-edges, as
-/// if every edge were flipped). Tracking which endpoint is the
-/// grouping key via this explicit flag -- rather than trying to infer
-/// it afterward by comparing values -- matters specifically because a
-/// self-loop (`u == v`, a real case the edge-case fixture exercises)
-/// makes `u == v` true regardless of which endpoint was actually used
-/// as the key, so any attempt to recover "which one was the key" from
-/// the values alone silently breaks exactly on that input.
-fn build_csr(n: usize, m: usize, chunks: &[(Vec<u32>, Vec<u32>, Vec<u32>)], forward: bool) -> Csr {
-    // Degree counting is embarrassingly parallel across chunks (each
-    // chunk already corresponds to one parse thread's share of the
-    // edges) -- give each a private `n+1`-sized local count array (no
-    // synchronization needed, since nothing is shared during the
-    // count), then sum the per-chunk arrays into the final `offsets`
-    // sequentially. The sum is O(n * chunks.len()), comparable to or
-    // cheaper than the O(m) counting work it replaces at this
-    // project's n/chunk-count ratio, and avoids any unsafe/atomic
-    // code for a step that was ~half of CSR-build's total cost
-    // (Step 8's finding: calibrated-local queries make parse+CSR a
-    // much bigger fraction of total wall time than it used to be,
-    // once query time itself drops to near nothing).
-    let local_counts: Vec<Vec<u32>> = std::thread::scope(|scope| {
-        let handles: Vec<_> = chunks
-            .iter()
-            .map(|(us, vs, _)| {
-                scope.spawn(move || {
-                    let mut counts = vec![0u32; n + 1];
-                    for i in 0..us.len() {
-                        let key = (if forward { us[i] } else { vs[i] }) as usize;
-                        counts[key + 1] += 1;
-                    }
-                    counts
-                })
-            })
-            .collect();
-        handles
-            .into_iter()
-            .map(|h| h.join().expect("degree-count worker panicked"))
-            .collect()
-    });
-
-    let mut offsets = vec![0u32; n + 1];
-    for counts in &local_counts {
-        for i in 0..=n {
-            offsets[i] += counts[i];
-        }
-    }
-    for i in 0..n {
-        offsets[i + 1] += offsets[i];
-    }
-
-    let mut cursor = offsets.clone();
-    let mut adj_node = vec![0u32; m];
-    let mut adj_weight = vec![0u32; m];
-    for (us, vs, ws) in chunks {
-        for i in 0..us.len() {
-            let (u, v, w) = (us[i], vs[i], ws[i]);
-            let (key, other) = if forward { (u, v) } else { (v, u) };
-            let pos = cursor[key as usize] as usize;
-            adj_node[pos] = other;
-            adj_weight[pos] = w;
-            cursor[key as usize] += 1;
-        }
-    }
-
-    Csr {
-        offsets,
-        adj_node,
-        adj_weight,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn chunk(edges: &[(u32, u32, u32)]) -> Vec<(Vec<u32>, Vec<u32>, Vec<u32>)> {
-        let us = edges.iter().map(|&(u, _, _)| u).collect();
-        let vs = edges.iter().map(|&(_, v, _)| v).collect();
-        let ws = edges.iter().map(|&(_, _, w)| w).collect();
-        vec![(us, vs, ws)]
+    /// Renders `edges` as `graph.txt`-style text (just the `u v w\n`
+    /// lines, no header -- the header is parsed separately in
+    /// `main.rs`) and builds via `build_forward_and_in_edge`, trying
+    /// every thread count in `thread_counts` to exercise both the
+    /// single-range (deterministic adjacency order) and multi-range
+    /// (parallel, scheduling-dependent order) paths.
+    fn build_with_thread_counts(
+        n: usize,
+        edges: &[(u32, u32, u32)],
+        thread_counts: &[usize],
+    ) -> Vec<(Csr, Vec<bool>)> {
+        let mut text = Vec::new();
+        for &(u, v, w) in edges {
+            text.extend_from_slice(format!("{u} {v} {w}\n").as_bytes());
+        }
+        thread_counts
+            .iter()
+            .map(|&threads| {
+                let ranges = crate::parse::line_aligned_ranges(&text, 0, threads);
+                build_forward_and_in_edge(n, edges.len(), &text, &ranges)
+            })
+            .collect()
+    }
+
+    /// Sorted `(v, w)` pairs for one node -- the order-independent
+    /// view every multi-thread-count assertion checks against, since
+    /// concurrent construction only guarantees SET equality per node,
+    /// not a specific insertion order (shortest-path correctness never
+    /// depends on adjacency order within one node; see the module
+    /// doc's multi-range tests below for the direct check that this
+    /// doesn't affect hash-matched output).
+    fn sorted_neighbors(csr: &Csr, node: u32) -> Vec<(u32, u32)> {
+        let (neighbors, weights) = csr.neighbors(node);
+        let mut pairs: Vec<(u32, u32)> = neighbors
+            .iter()
+            .copied()
+            .zip(weights.iter().copied())
+            .collect();
+        pairs.sort_unstable();
+        pairs
     }
 
     #[test]
     fn forward_csr_groups_by_u() {
         let edges = [(0, 1, 5), (0, 2, 7), (1, 2, 3)];
-        let csr = build_forward(3, 3, &chunk(&edges));
-        let (neighbors, weights) = csr.neighbors(0);
-        assert_eq!(neighbors, &[1, 2]);
-        assert_eq!(weights, &[5, 7]);
-        let (neighbors, weights) = csr.neighbors(1);
-        assert_eq!(neighbors, &[2]);
-        assert_eq!(weights, &[3]);
-        let (neighbors, _) = csr.neighbors(2);
-        assert!(neighbors.is_empty());
+        for (csr, _) in build_with_thread_counts(3, &edges, &[1, 2, 3]) {
+            assert_eq!(sorted_neighbors(&csr, 0), vec![(1, 5), (2, 7)]);
+            assert_eq!(sorted_neighbors(&csr, 1), vec![(2, 3)]);
+            assert_eq!(sorted_neighbors(&csr, 2), vec![]);
+        }
     }
 
     #[test]
-    fn reverse_csr_groups_by_v_storing_u() {
+    fn handles_self_loops_and_duplicate_and_parallel_edges() {
+        let edges = [(0, 1, 5), (0, 1, 9), (2, 2, 7), (0, 1, 5)];
+        for (csr, _) in build_with_thread_counts(3, &edges, &[1, 2, 3, 4]) {
+            assert_eq!(sorted_neighbors(&csr, 0), vec![(1, 5), (1, 5), (1, 9)]);
+            assert_eq!(sorted_neighbors(&csr, 2), vec![(2, 7)]);
+        }
+    }
+
+    #[test]
+    fn multiple_ranges_merge_correctly() {
         let edges = [(0, 1, 5), (0, 2, 7), (1, 2, 3)];
-        let csr = build_reverse(3, 3, &chunk(&edges));
-        let (preds, _) = csr.neighbors(0);
-        assert!(preds.is_empty());
-        let (preds, weights) = csr.neighbors(1);
-        assert_eq!(preds, &[0]);
-        assert_eq!(weights, &[5]);
-        let (preds, weights) = csr.neighbors(2);
-        assert_eq!(preds, &[0, 1]);
-        assert_eq!(weights, &[7, 3]);
+        for (csr, _) in build_with_thread_counts(3, &edges, &[2, 3, 7, 12]) {
+            assert_eq!(sorted_neighbors(&csr, 0), vec![(1, 5), (2, 7)]);
+            assert_eq!(sorted_neighbors(&csr, 1), vec![(2, 3)]);
+        }
     }
 
     #[test]
-    fn handles_self_loops_and_duplicate_edges() {
-        let edges = [(0, 1, 5), (0, 1, 9), (2, 2, 7)];
-        let fwd = build_forward(3, 3, &chunk(&edges));
-        let (neighbors, weights) = fwd.neighbors(0);
-        assert_eq!(neighbors, &[1, 1]);
-        assert_eq!(weights, &[5, 9]);
-        let (neighbors, weights) = fwd.neighbors(2);
-        assert_eq!(neighbors, &[2]);
-        assert_eq!(weights, &[7]);
+    fn has_in_edge_flags_only_nodes_with_an_incoming_edge() {
+        // Node 0: two out-edges, no in-edge at all (the spec's "node with
+        // no in-edges" structure). Node 3: a self-loop only -- still
+        // counts as an in-edge of itself. Node 4: on no edge line at all.
+        let edges = [(0, 1, 4), (0, 2, 9), (1, 2, 3), (2, 1, 6), (3, 3, 7)];
+        for (_, seen) in build_with_thread_counts(5, &edges, &[1, 3, 5]) {
+            assert!(
+                !seen[0],
+                "node 0 has two out-edges but nothing points at it"
+            );
+            assert!(seen[1]);
+            assert!(seen[2]);
+            assert!(seen[3], "the self-loop 3->3 is still an in-edge of 3");
+            assert!(!seen[4], "node 4 is on no edge line at all");
+        }
     }
 
+    /// Repeated builds of the SAME input must always produce the same
+    /// shortest-path answers, even though concurrent cursor claims can
+    /// legitimately reorder a node's adjacency list differently run to
+    /// run -- this is the property that actually matters for hash-
+    /// matching (not any specific internal order).
     #[test]
-    fn multiple_chunks_merge_correctly() {
-        let chunks = vec![
-            (vec![0u32], vec![1u32], vec![5u32]),
-            (vec![0u32, 1u32], vec![2u32, 2u32], vec![7u32, 3u32]),
-        ];
-        let fwd = build_forward(3, 3, &chunks);
-        let (neighbors, _) = fwd.neighbors(0);
-        assert_eq!(neighbors, &[1, 2]);
-        let (neighbors, _) = fwd.neighbors(1);
-        assert_eq!(neighbors, &[2]);
+    fn repeated_builds_agree_on_every_shortest_path_regardless_of_internal_order() {
+        use std::cmp::Reverse;
+        use std::collections::{BinaryHeap, HashMap};
+
+        fn naive_dijkstra(csr: &Csr, s: u32, t: u32) -> Option<u64> {
+            let mut dist = HashMap::new();
+            let mut heap = BinaryHeap::new();
+            dist.insert(s, 0u64);
+            heap.push((Reverse(0u64), s));
+            while let Some((Reverse(d), u)) = heap.pop() {
+                if d > dist[&u] {
+                    continue;
+                }
+                if u == t {
+                    return Some(d);
+                }
+                let (neighbors, weights) = csr.neighbors(u);
+                for (&v, &w) in neighbors.iter().zip(weights.iter()) {
+                    let nd = d + w as u64;
+                    if !dist.contains_key(&v) || nd < dist[&v] {
+                        dist.insert(v, nd);
+                        heap.push((Reverse(nd), v));
+                    }
+                }
+            }
+            None
+        }
+
+        let edges: Vec<(u32, u32, u32)> = (0..200)
+            .map(|i| (i % 37, (i * 7 + 3) % 37, (i * 13 + 1) % 50 + 1))
+            .collect();
+        let builds = build_with_thread_counts(37, &edges, &[1, 2, 3, 5, 7, 12]);
+        let (reference, _) = &builds[0];
+        for (csr, _) in &builds[1..] {
+            for s in 0..37u32 {
+                for t in 0..37u32 {
+                    assert_eq!(
+                        naive_dijkstra(reference, s, t),
+                        naive_dijkstra(csr, s, t),
+                        "s={s} t={t}: distance changed across different thread counts"
+                    );
+                }
+            }
+        }
     }
 }
