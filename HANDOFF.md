@@ -1,0 +1,470 @@
+# HANDOFF
+
+Repo root, outside every `track-*/` folder on purpose -- this file does not
+count toward any track's S. Written for an agent with zero prior context on
+this session. Keep it accurate; update it at the end of every phase.
+
+Last updated: 2026-10-31, mid Phase 1a (Track B memory redesign), by the
+agent executing the MISSION in the section below.
+
+## 0. The mission in force right now
+
+The user gave a phased mission to maximize overall score before the team's
+own freeze (2026-11-02 10:00 UTC) and the official freeze (2026-11-02 15:00
+UTC). Work through phases 1-6 **in order**, autonomously, pushing to
+`speed-demon` after every kept change, reporting briefly at the end of each
+phase, and stopping only for a failed gate or a decision only the user can
+make. See section 4 for the phase list and section 3 for current progress.
+
+## 1. Scoring (official, as given by the user -- this supersedes anything
+older)
+
+```
+K = (Tref/T)^0.50 x min(Mref/M, 50)^0.20 x min(Sref/S, 1)^0.15 x min(1/D, 1)^0.15
+points = 50 x log10(K), clamped to [0, 100]
+overall = geometric mean of the best THREE of the four tracks' points
+```
+
+- **T** (wall time, mean of middle 3 of 5 runs): UNCAPPED. Dominates (weight
+  0.50). Each 2x speedup is worth about +7.5 points on its own.
+- **M** (cgroup `memory.peak`): capped at 50x (so once you're 50x under
+  Mref, more M improvement stops mattering to K, though it's still worth
+  having headroom). Weight 0.20.
+- **S** (source lines, via `scc`'s Code column, i.e. excluding comments and
+  blanks): capped at factor 1.0 -- beating Sref gives NO bonus, only matching
+  or exceeding it can cost you. Weight 0.15. This means **lines are a pure
+  tax**: every line added must be justified by what it does for T or M.
+- **D** = 1 + direct non-stdlib dependencies. All four tracks currently
+  carry zero dependencies (empty `[dependencies]` in every `Cargo.toml`), so
+  D = 1 everywhere and this term is always at its best possible value
+  (`min(1/1,1)^0.15 = 1`) -- do not add a dependency without recomputing
+  whether it's worth the D hit, which is almost never only possible to
+  justify this late.
+
+Seed-1 calibration (Tref/Mref/Sref), per track:
+
+| Track | Tref (s) | Mref | M cap (Mref/50) | Sref (lines) |
+|---|---|---|---|---|
+| A | 32.05 | 228 MB | ~4.6 MB | 56 |
+| B | 56.35 | 2.2 GB | ~44 MB | 91 |
+| C | 14.44 | 367 MB | ~7.3 MB | 108 |
+| D | 72.69 | 893 MB | ~17.9 MB | 43 |
+
+### Break-even rule for any change that adds lines
+
+Solving for where S's line-cost cancels T's gain (weight 0.15 vs 0.50):
+an optimization that grows the code by x% (S -> S*(1+x)) needs at least a
+`(1+x)^0.3` wall-time speedup (T_old/T_new) to be worth keeping. Anything
+slower than that is a net score loss even if it is genuinely faster in
+absolute terms. Dead code, an unused tuning knob, an experimental branch
+nobody measures as better -- these cost S with zero T contribution and are
+pure losses under this rule; see Phase 6.
+
+## 2. Repo layout, workflow, and how to run things
+
+```
+.
+|- check.py            starter correctness/sandbox check (see below)
+|- LICENSE              MIT -- already present, already correct
+|- ci/
+|  |- docker-run.sh     exact official `docker run` invocation (cpuset 0-11,
+|  |                    8g mem/no swap, no network, read-only root, 1g tmpfs)
+|  |- bench.sh          5 runs, drop min/max, mean of middle 3; sha256 gate;
+|  |                    auto-reruns once if wall-time spread > 5%
+|  |- Dockerfile.bench  CI-only: same build as the submission Dockerfile,
+|  |                    entrypoint wrapped by mem_wrapper.sh so bench.sh can
+|  |                    read real cgroup memory.peak before teardown
+|  |- mem_wrapper.sh    the wrapper itself (CI-only, never shipped)
+|- track-a/ track-b/ track-c/ track-d/
+|  |- Dockerfile        multi-stage: rust:1-slim-trixie (pinned by digest)
+|  |                    build, debian:13-slim final stage, binary named
+|  |                    "solution", RUSTFLAGS="-C target-cpu=x86-64-v3"
+|  |- Cargo.toml        opt-level=3, lto="fat", codegen-units=1,
+|  |                    panic="abort"; NO [dependencies] section (D=1)
+|  |- src/              all code; `src/format.rs`-equivalent output-writing
+|  |                    module per track for spec-dependent formatting
+|  |- README.md         approach, design decisions, "with another 24 hours"
+|  |- PERF.md           every step, with board run IDs, kept or reverted
+|- .github/workflows/
+   |- track-a.yml track-b.yml track-c.yml track-d.yml
+   |     cargo test --release, then: clone the official event repo, generate
+   |     full-scale seed-1 data with the OFFICIAL generator, run the OFFICIAL
+   |     python reference for the expected hash, build the submission image
+   |     exactly, run it with docker-run.sh's real sandbox flags, hash-check,
+   |     then valgrind massif (heap profile) and ci/bench.sh (wall/exec T +
+   |     real Linux cgroup M) -- all on a shared 2-core GitHub runner, NOT
+   |     comparable 1:1 to the 12-core scoring board (see pitfalls below).
+   |     Triggered on push to files under that track/, ci/, or the workflow
+   |     file itself.
+   |- verify-official.yml
+         official-seed1: downloads the REAL seed-1 input files from S3,
+         verifies them against the published SHA256SUMS.json, runs check.py
+         with --expected the official output hash, then bench.sh for M.
+         holdout-robustness: seeds 2/3/4 (never tuned against) at sample
+         scale plus seed 2 at full scale, generated fresh from the official
+         generators with a freshly-run official reference for ground truth
+         -- the overfitting check. Both jobs run on every push to any
+         track-*/, ci/, or this workflow file.
+```
+
+**The official event repo** (generators + Python reference + specs) is
+`https://github.com/hackathon-raptors/speed-demon-2026` -- cloned fresh by
+CI every run, never vendored locally. Generators: `generators/<module>.py
+--seed N --scale {sample,full} --out <dir>`; module names are
+`a_ingest`, `b_index`, `c_join`, `d_traverse`. Reference:
+`reference/<module>.py --data <dir> --out <dir>`. Official seed-1 data for
+the live scoring S3 bucket is at
+`https://s3.amazonaws.com/raptors.dev/speeddemon.dev/2026/data/track-<x>/full-seed1/`,
+with a master `SHA256SUMS.json` at the bucket root giving both input and
+expected-output hashes per track.
+
+**The board** is external and not this repo -- "push to speed-demon" is the
+only lever here; the board itself triggers on that push and is the final
+judge of K (rule 4 below). We cannot query the board directly; the user
+relays board run IDs/numbers back into the conversation.
+
+### Running hash checks locally
+
+```sh
+# Starter-provided check: builds the track's own Dockerfile exactly
+# (--network=none), runs it with the board's sandbox flags, hashes /out.
+python3 check.py <a|b|c|d> --data <dir-with-that-track's-input-files> [--expected <sha256>]
+
+# Full local dev loop, native (no Docker), fast iteration:
+cd track-<x> && cargo test --release && cargo build --release
+./target/release/solution <data-dir> <out-dir>
+sha256sum <out-dir>/<output-file>   # compare by hand against a reference run
+
+# Faithful dry run of the EXACT official docker run invocation (no M):
+bash ci/docker-run.sh <image> <data-dir> <out-dir> [TRACK]
+
+# Full T + M measurement via the wrapped bench image (needs Dockerfile.bench
+# assembled into a build context with mem_wrapper.sh copied alongside, see
+# any track-*.yml's "Assemble the bench-only build context" step):
+bash ci/bench.sh <image> <data-dir> <out-base-dir> <expected-sha256-file> <track> [output-filename]
+```
+
+There is no official data checked into this repo (no `data/` directory) --
+either download the real seed-1 files from the S3 paths above, or clone the
+official event repo and run its generators/reference yourself.
+
+### dockerfile_check.py / allowlist / x86-64-v3
+
+`check.py` at the repo root is the correctness+sandbox check; its FROM-line
+allowlist logic (`from_problems`, `allowlisted_digests`) is the
+"dockerfile_check.py" the mission rules refer to: every `FROM` not an
+earlier build stage must be pinned by `@sha256:` digest AND that digest
+must appear in the board's own `https://speeddemon.dev/allowlist.json`.
+Currently every Dockerfile uses:
+```
+FROM rust:1-slim-trixie@sha256:... AS build
+...
+FROM debian:13-slim@sha256:...
+```
+both pinned, both expected to be allowlisted (confirm against the live
+allowlist URL before freeze -- `check.py` fetches it automatically and
+fails loud if a digest isn't on it, but only when it can reach the network;
+offline it just skips the check with a note).
+
+RUSTFLAGS is `-C target-cpu=x86-64-v3` in every Dockerfile, NOT `native`
+-- see pitfall below for why. PGO is not yet implemented anywhere (Phase 5);
+when it is, the plan (per every track's README "with another 24 hours"
+section already written) is: train on a seed other than 1, using the
+organiser's allowlisted `llvm-tools` image, commit the resulting
+`.profdata`, build with `-Cprofile-use`, keep only if the board improves.
+
+## 3. Current state per track
+
+Numbers below are the MISSION's fresh real board numbers (given directly by
+the user, current as of 2026-10-31) unless marked otherwise. "Lines" is the
+mission's reported board S; where it differs from a fresh local `scc`
+count, both are given -- `scc` run on `track-<x>/src` reports its `Code`
+column (excludes comments/blanks), which is what the board's own S count
+should match modulo which commit each was measured on.
+
+**Overall board score at mission start: 47.98** (best three of A/B/D, since
+C was behind and dropped). Leaders' numbers (same board, other teams) are
+in the targets table.
+
+### Track A -- Ingest (`a_ingest`, `requests.log` -> `summary.txt`)
+
+- **Design**: mmap `requests.log`; up to 12 line-aligned byte-range workers;
+  per-thread endpoint+hour interning to small u32 ids; one packed `u32` key
+  (`hour_id<<16 | endpoint_id`) indexes a flat `GroupAgg` array (no string-
+  keyed HashMap); latencies pushed as packed `u64` (`local_group<<32 |
+  latency`) into one flat per-thread Vec; global ids assigned in sorted
+  byte order so output order falls out for free; one O(n) counting-sort
+  scatter places every latency into its group's slice of one contiguous
+  array; p50/p95/p99 via `select_nth_unstable` (O(k) not O(k log k)),
+  computed in parallel across 12 threads via safe `split_at_mut` on
+  disjoint group ranges.
+- **Board**: T 0.142 s, M 69 MB, lines 659 (`scc`: 651 Code lines),
+  56.0 pts. Board run IDs for the pre-mission history are in
+  `track-a/PERF.md`'s "Board runs" table (step 0: commit `82161a6`, T
+  0.372/M 96/46.2pts; step 1: CI run `41179179406`, the mmap+counting-sort
+  rewrite, CI T 0.636s wall/0.411s exec/M 67.45MB -- the *board* run for
+  step 1 isn't logged with its own row yet, confirm/backfill before
+  freeze).
+- **Leader**: T 0.023 s, M 22 MB.
+- **Target** (mission, Phase 2): T <= 0.10 s, M <= 25 MB.
+- **Known bottleneck / next steps** (per `track-a/README.md`'s "with
+  another 24 hours", not yet done): `scan`'s per-byte tokenize/match loop
+  is the largest remaining phase; current endpoint interning is a
+  `HashMap`, not yet the per-thread open-addressing table the mission's
+  Phase 2 asks for; the counting-sort scatter is still single-threaded.
+- **Tried and reverted** (see `track-a/PERF.md` step 4): two separate
+  memory hypotheses (two-pass count-then-exact-allocate; one-pass
+  fixed-block pool) BOTH measured no improvement (or slightly worse) on
+  Windows `PeakWorkingSet64` and were discarded -- flagged as possibly a
+  measurement-method ceiling rather than a real floor; needs re-testing
+  against the board's actual cgroup M, not Windows' number.
+- **Phase 2 not started yet** (task #21, pending).
+
+### Track B -- Index (`b_index`, `docs.txt`+`queries.txt` -> `results.txt`)
+
+- **Design**: parse `queries.txt` first (interns only the ~75,700 terms the
+  50,000 queries actually use, out of 600k vocabulary -- spec-sanctioned);
+  mmap `docs.txt`, scan in parallel building PRESENCE postings only
+  (u32 doc-id lists per term) via a counting-sort scatter (no comparison
+  sort); BOOL = sorted-list AND/OR/NOT, left-to-right, no precedence;
+  PHRASE = rarest-first PRESENCE intersection for candidates, then
+  **as of commit `0465a16`, re-tokenize each candidate directly off the
+  mmap** via a new `doc_offsets: Vec<(u32,u32)>` table (doc_id -> absolute
+  byte range), never a stored per-document token-position index.
+- **Board (pre-redesign)**: T 1.084 s, M 835 MB, lines 1084, 39.0 pts --
+  this was the LOWEST counted track and the mission's top-leverage target.
+  Logged in `track-b/PERF.md`'s Board runs table, step 5.
+- **Leader**: T 0.284 s, M 43 MB.
+- **Target** (mission, Phase 1): T <= 0.30 s, M <= 50 MB (exit Phase 1
+  early if B reaches >= 60 pts on the board).
+- **Just shipped (commit `0465a16`, pushed to speed-demon)**: removed the
+  per-document token-POSITION index entirely. `valgrind massif` on the
+  PRE-redesign build (CI run `41183747430`) showed its true peak (814.2 MB
+  heap) was 62% position-related: 37.09% (302.0 MB) the per-thread
+  `positions: Vec<(u32,u32,u32)>` in `scan_docs`, plus 24.54% (199.8 MB)
+  the final `position_pairs` array in `build_index`. Replaced with the
+  `doc_offsets` table (~2 MB) plus re-tokenize-on-candidate verification
+  (mirrors the reference's exact adjacency semantics, including an
+  oversized/skipped token correctly breaking adjacency -- covered by new
+  tests). `needs_position` removed end-to-end (dead once nothing stores
+  positions). All 43 unit tests pass (37 prior + 6 new `eval_phrase` edge
+  cases). `scc` now reports 1058 Code lines (down from the pre-redesign
+  1084 the board reported -- consistent with removing ~4 fields/functions).
+  **CI status at last check**: `verify-official` PASSED (run `41239004719`
+  -- hash-matches the real seed-1 data and holdout seeds 2/3/4). The
+  `track-b` workflow (run `41239004748`, massif + bench.sh cgroup M) was
+  still running -- **check `gh run view 41239004748` for the actual
+  massif/cgroup M result and fill in `track-b/PERF.md` step 6's blank T/M/
+  Points columns, then push to get a fresh board run.**
+- **Phase 1b (time tuning toward T <= 0.30s) not started** -- do it after
+  confirming Phase 1a's board number, per the mission's own phase order.
+  The counting-sort merge and parallel query eval are already in place;
+  removing position tracking should also help `scan_docs`'s per-token
+  work (one fewer branch, one fewer push per matched token in the
+  needs-position case). Re-profile before assuming this is enough.
+- **Task #19 (Phase 1a) in_progress, #20 (Phase 1b) pending.**
+
+### Track C -- Join (`c_join`, `records.csv`+`regions.csv` -> `aggregates.txt`)
+
+- **Design**: mmap both files; `records.csv` split via snap-to-newline
+  speculation (parallel, not quote-aware) + one sequential verify pass that
+  only re-scans a chunk whose guess was wrong; RFC4180-style `CsvReader`
+  (`""`-escapes, embedded LF/CRLF, mixed terminators, BOM stripped in place
+  at record start); region join via a direct-indexed flat `Vec<u16>`
+  (`pack_country`, an injective AND order-preserving `[A-Z]{3}` -> `0..
+  17576` packing, so iterating ascending already yields sorted output, no
+  sort step); 8 of 9 output fields are O(1) flat-array updates; the 9th
+  (`names_distinct`) uses a two-phase, lock-free design: phase 1 shards
+  `(country, name)` by `hash(name) % 12` into per-thread-per-shard buffers
+  (zero shared state); phase 2 (12 threads, one shard each, no lock needed
+  since a name's shard depends only on its own bytes) **sorts** each
+  shard's pairs and counts distinct-by-byte-comparison runs (NOT a
+  HashMap/HashSet -- see "tried and reverted" below).
+- **Board**: T 0.345 s, M 253 MB, lines 1203, 34.3 pts -- currently the
+  DROPPED track (not in the best-3). `scc` now reports 1241 Code lines
+  (close to the board's 1203; small drift, re-measure before freeze).
+- **Leader**: T 0.037 s, M 12 MB.
+- **No explicit target given** -- Phase 4 is conditional: "only if C can
+  plausibly beat our lowest counted track" (currently that's whichever of
+  A/B/D ends up lowest after Phases 1-3; re-evaluate then). Phase 4
+  targets if pursued: T <= 0.12 s, M <= 40 MB.
+- **Tried and reverted / superseded** (see `track-c/PERF.md` steps 3-5):
+  per-thread `HashSet<Vec<u8>>` for dedup -> replaced with a global
+  mutex-sharded `InternTable` (worse M than Mref, lock contention
+  suspected) -> replaced with the lock-free two-phase shard design above
+  -> that phase 2's `HashMap<u16,HashSet<&[u8]>>` tried with std SipHash,
+  then a hand-rolled FNV-1a (modest win), then **replaced entirely with
+  the sort-based dedup** (interleaved 5-round A/B, non-overlapping ranges,
+  ~15-20% faster than even the FNV-hashed version) -- this is what's
+  shipped now (commit `5d85905`, CI run `41185182257`: wall 1.600s/exec
+  1.435s/M 258.71MB).
+- **Known bottleneck / next steps** (per README "with another 24 hours",
+  not yet done): `CsvReader::next()` still allocates a fresh `Vec` per
+  record for its field list -- flagged as the next hot-loop allocation to
+  remove, and phase 1 (parsing) is now the second-largest phase after
+  phase 2.
+- **Phase 4 not started** (task #23, pending, conditional on Phases 1-3's
+  outcome).
+
+### Track D -- Traverse (`d_traverse`, `graph.txt`+`queries.txt` -> `distances.txt`)
+
+- **Design**: mmap `graph.txt`; parallel TWO-PASS CSR build (pass 1: atomic
+  per-node degree counts via `Vec<AtomicU32>`, no parsing of `v`/`w`; pass
+  2: full parse, atomic per-node cursor claims each edge's final CSR slot
+  directly -- the parsed `(u,v,w)` triples are never stored as a separate
+  structure); `has_in_edge` bitmap set inline in pass 2 for the O(1)
+  no-in-edge -> -1 short circuit; BFS-order node renumbering for cache
+  locality (forward-only, since the spec's main body is strongly
+  connected) -- confirmed by measurement to matter hugely (identity
+  mapping: queries ~380ms -> ~2.7s, a 7x regression) so it stays; per-query
+  workspace is a paged sparse array (`PAGE_SIZE=1024`, swept against 256
+  and 4096 and chosen as the winner) with direct index arithmetic, no
+  hashing; `u64::MAX` sentinel avoids a separate stamp field; dynamic
+  per-query work distribution via a shared `AtomicUsize` counter (measured
+  97% parallel efficiency, i.e. load-balancing was never the problem).
+- **Board**: T 0.631 s, M 112 MB, lines 927, 50.5 pts. `scc` reports 919
+  Code lines (close). Board run IDs in `track-d/PERF.md`'s Board runs
+  table: step 0 is commit `82161a6` (T 0.772/M 201/46.3pts); step 1 (the
+  two-pass CSR + confirmed-necessary BFS reorder, commit `e7fe313`) is
+  logged as `*(pending push)*` with only CI numbers (2-core CI *regressed*
+  wall 2.689s->3.358s while M improved 235->112MB -- diagnosed as the
+  two-pass parse doing ~1.5x the total parsing work, a net win at 12
+  threads but a net loss at CI's 2 -- **confirm this already reached the
+  board and get a real board run ID into that row**, since the currently
+  quoted board T 0.631/M 112 looks like it already reflects this change
+  (M matches CI's 112.18MB closely) but the PERF.md row itself still says
+  "pending push").
+- **Leader**: T 0.127 s, M 71 MB.
+- **Target** (mission, Phase 3): T <= 0.17 s.
+- **Known bottleneck / next steps**: Phase 3 asks for a fresh phase
+  breakdown (parse/CSR build/in-edge bitmap/reorder/queries/output) on the
+  CURRENT code first, since the two-pass rewrite changed the balance
+  between load and query phases -- do not assume step-1's pre-rewrite
+  breakdown (CSR build was the single biggest piece before pass 1/2 were
+  split) still holds. If queries still dominate: BinaryHeap -> radix/4-ary
+  heap is the mission's suggested next move. If load dominates: the
+  two-pass mmap parse is already in place; the open item is re-measuring
+  on the BOARD (not CI's 2 cores) whether BFS reorder still pays given the
+  two-pass build's own new cost profile -- it was confirmed necessary on
+  the OLD single-pass build (7x regression without it) but has not been
+  re-A/B'd since the two-pass rewrite landed.
+- **Phase 3 not started** (task #22, pending).
+
+### Line-count reconciliation note
+
+Mission-reported board lines (A 659, B 1084-pre-redesign, C 1203, D 927)
+and this session's fresh local `scc track-<x>/src` runs (A 651, B 1058
+post-redesign, C 1241, D 919) are close but not identical for every track
+-- expected, since they're measured on different commits and `scc`'s own
+version/config can drift. Before freeze, re-run `scc` on the exact commit
+about to ship and reconcile any track whose drift is more than a few
+lines (C's 1203 vs 1241, a 38-line/~3% gap, is the one furthest apart and
+worth a direct look).
+
+## 4. Phased optimization plan (mission, in order)
+
+| Phase | Track | Budget | Target | Status |
+|---|---|---|---|---|
+| 1a | B memory | ~8h (shared w/ 1b) | 835MB -> <=50MB | **IN PROGRESS** -- position-index removal shipped (commit `0465a16`), CI running, board number not yet in hand |
+| 1b | B time | (shared w/ 1a) | 1.084s -> <=0.30s | NOT STARTED -- do after 1a's board number confirms |
+| 2 | A | ~5h | T<=0.10s, M<=25MB | NOT STARTED |
+| 3 | D | ~6h | T<=0.17s | NOT STARTED |
+| 4 | C (conditional) | ~4h | T<=0.12s, M<=40MB | NOT STARTED -- only if C can beat the lowest counted track after 1-3 |
+| 5 | Global tuning | ~4h (Nov 1) | thread sweep, MALLOC_ARENA_MAX, PGO | NOT STARTED |
+| 6 | Lines + freeze prep | (Nov 2 morning; team freeze 10:00 UTC) | dead code removal, final verification, READMEs/PERF.md complete, LICENSE confirmed | NOT STARTED |
+
+Exit each phase either when its target is hit on the BOARD, or when its
+time budget is used -- whichever comes first. The mission says to keep
+going phase to phase without waiting for confirmation unless a gate fails
+or a decision needs the user.
+
+Task-tracker IDs (numbers only meaningful within this Claude Code session,
+not persisted in the repo -- re-derive status from this table and PERF.md
+if the tracker is gone): #19=1a, #20=1b, #21=2, #22=3, #23=4, #24=5, #25=6.
+
+## 5. Hard rules (non-negotiable, every change)
+
+1. **Correctness gate**: byte-identical (sha256) vs the official reference
+   on seed-1 sample AND full, plus holdout seeds 2/3/4 (via CI's
+   `verify-official.yml`). A change failing any of these is reverted
+   immediately, however fast it is.
+2. **Zero dependencies** (D=1). No locks in hot loops. No allocation in hot
+   loops. No repeated hashing in hot loops. Use whichever thread count
+   actually measures best (Phase 5 sweep: 6/8/12), not necessarily 12 by
+   default, though 12 is the max ever allowed (one P-core's worth of
+   logical threads on the scoring box: 6 P-cores = 12 threads).
+3. **Measure before and after every change**: local 12-thread wall time,
+   CPU/wall ratio (parallelism efficiency check), a phase breakdown when
+   diagnosing; CI cgroup `memory.peak` always, `massif` specifically when
+   memory is the target of that change.
+4. **The board is the final judge.** Push every improved track to
+   `speed-demon`. Keep a change only if the board's K actually improved;
+   if the board gets worse, revert and record why (CI numbers alone are
+   NOT sufficient to decide keep/revert -- CI's shared 2-core runner does
+   not reproduce the board's 12-core, pinned-P-core behavior; Track D's
+   step 1 is the clearest example in this repo of CI and board disagreeing
+   in direction).
+5. **Log every attempt** in that track's `PERF.md`, including the board
+   run ID, before/after numbers, and kept-or-reverted. Log failed
+   experiments too (Track A's step-4 memory hypotheses are the template:
+   both reverted, both still written up with real numbers and why).
+6. **Dockerfiles must keep passing `check.py`'s allowlist check**
+   (digest-pinned FROM lines, every digest present on
+   `https://speeddemon.dev/allowlist.json`) and must never use `-C
+   target-cpu=native` (see pitfall below) -- `x86-64-v3` is the fixed,
+   portable AVX2 baseline actually used everywhere in this repo.
+7. **Unsafe code** (mmap's `extern "C"` declarations, the CSR build's
+   atomic-then-`into_inner` pattern, etc.) must carry a comment explaining
+   why the specific unsafe operation is actually safe in context -- not a
+   generic "this is unsafe" note.
+
+## 6. Pitfalls already hit in this repo (don't rediscover these)
+
+- **Windows memory numbers are not trustworthy.** Local dev-machine memory
+  readings (Windows `PeakWorkingSet64`, no cgroup, no containerization) do
+  not reliably move in the direction real changes should move them --
+  Track A's PERF.md step 4 ran THREE separate, carefully-designed memory
+  optimizations locally and measured zero or negative improvement on all
+  three, concluded this was very likely a measurement-method ceiling (not
+  that the optimizations were wrong), and explicitly flagged "needs the
+  board's real number" rather than claiming a win. Treat any Windows-only
+  memory number as directional at best; only trust CI's real Linux cgroup
+  `memory.peak` (via `ci/bench.sh`/`mem_wrapper.sh`) or the board itself.
+- **CI's 2-core runner does not predict board (12-core) wall time, and can
+  disagree in DIRECTION, not just magnitude.** Track D's two-pass CSR
+  rewrite: local 12-thread measurement showed a genuine ~10-15% T
+  improvement; the SAME commit measured on CI's 2-core shared runner
+  showed wall time getting 25% WORSE. Root cause: the two-pass design does
+  more total parsing work (pass 1 partially parses every line, pass 2
+  fully re-parses it, ~1.5x total work) -- a net win when spread across 12
+  threads, a net loss squeezed onto 2. The board has 12 P-cores, matching
+  the local measurement's thread count, not CI's -- so in a case like
+  this, trust the 12-thread local number and the eventual board number,
+  not CI's T (CI's M is still trustworthy -- memory totals don't depend on
+  core count the way wall time does).
+- **The build machine has AVX-512; the scoring machine does not.** CI (and
+  likely the actual build step before scoring, on "Depot") runs on
+  hardware with AVX-512 available. The scoring box is an i5-13500, 6
+  P-cores, AVX2 only, NO AVX-512. `-C target-cpu=native` on the build
+  machine would bake in AVX-512 instructions that could crash or silently
+  misbehave on the scoring box. Every Dockerfile in this repo instead uses
+  the fixed, portable `-C target-cpu=x86-64-v3` (guaranteed AVX2, no
+  AVX-512, valid on both machines) -- confirmed (per PERF.md notes made
+  while this was being decided) that this string does NOT trip whatever
+  native-CPU-opt-in check the board's own build steps apply to `RUSTFLAGS`.
+  Never change this to `native` for a "free" speedup; it is not free, it
+  is a correctness risk on the only machine that counts.
+- **Git on Windows does not reliably track the Unix executable bit.** This
+  repo's root `check.py` has a shebang and needs `+x` to run as `./check.py`
+  on Linux, but is currently committed as mode `100644` (non-executable) --
+  confirmed via `git ls-files --stage check.py`. It still works because
+  every invocation in this repo and in CI calls it as `python3 check.py
+  ...`, never `./check.py` directly, which sidesteps the bit entirely; but
+  if a new script is added and invoked as `./script.sh` anywhere (CI YAML,
+  a Makefile-equivalent, etc.), explicitly `git update-index
+  --chmod=+x <path>` after adding it on this Windows dev machine, or it
+  will fail with "Permission denied" the first time it runs on a real
+  Linux runner, even though it looks fine locally. `ci/bench.sh`,
+  `ci/docker-run.sh`, and `ci/mem_wrapper.sh` are already correctly
+  `100755` in the index and do not need this -- only new scripts are at
+  risk.
