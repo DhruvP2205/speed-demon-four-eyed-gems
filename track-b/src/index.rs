@@ -204,13 +204,20 @@ pub fn build_index(
     let mut presence_cursor = presence_offsets.clone();
     let mut position_cursor = position_offsets.clone();
 
-    for t in &threads {
-        for &(term_id, doc_id) in &t.presence {
+    // Consumes `threads` (by value, not `&threads`): each `ThreadPostings`
+    // -- including its own, separate copy of up to several hundred MB of
+    // `presence`/`positions` entries at `full` scale -- is dropped as
+    // soon as ITS contribution is scattered, instead of all 12 staying
+    // alive for the whole loop alongside the final arrays they're being
+    // copied into. Measured cutting real cgroup `memory.peak` by roughly
+    // a third (see PERF.md).
+    for t in threads {
+        for (term_id, doc_id) in t.presence {
             let pos = presence_cursor[term_id as usize] as usize;
             presence_docs[pos] = doc_id;
             presence_cursor[term_id as usize] += 1;
         }
-        for &(term_id, doc_id, token_pos) in &t.positions {
+        for (term_id, doc_id, token_pos) in t.positions {
             let pos = position_cursor[term_id as usize] as usize;
             position_pairs[pos] = (doc_id, token_pos);
             position_cursor[term_id as usize] += 1;
