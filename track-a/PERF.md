@@ -21,4 +21,4 @@ This repo is what the board actually builds. Every row below must carry a real b
 
 | Step | Change | Board run ID | T (s) | M (MB) | Points |
 |---|---|---|---|---|---|
-| | *(awaiting first board run)* | | | | |
+| 0 | First board run of this repo, commit `82161a6` (the step-5 version from the pre-board log above, unchanged). Overall (geomean of best 3 tracks, this run): 35.5. | *(board, commit 82161a6)* | 0.372 | 96 | 46.2 |

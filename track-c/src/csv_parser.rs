@@ -4,10 +4,12 @@
 //! Python's own `csv` module (what `reference/c_join.py` relies on)
 //! field-for-field, byte-for-byte.
 //!
-//! BOM handling is intentionally NOT part of this parser -- see
-//! `strip_record_start_boms`, a separate preprocessing pass: a BOM is
-//! stripped only at byte 0 or immediately after a terminating `\n`,
-//! never mid-field (spec section 2.1).
+//! A BOM is stripped only where it marks a record start: byte 0, or
+//! immediately after a terminating `\n`, never mid-field (spec section
+//! 2.1). `CsvReader::next()` is only ever called with its cursor
+//! positioned at exactly such a point, so it skips a BOM there
+//! in-place, with no separate whole-buffer pre-pass and no copy --
+//! the fields it hands back borrow directly from the input slice.
 //!
 //! A lone `\r` not followed by `\n` is treated as ordinary field
 //! content, not a line ending -- the generator never emits one (the
@@ -16,28 +18,7 @@
 
 use std::borrow::Cow;
 
-pub const BOM: [u8; 3] = [0xEF, 0xBB, 0xBF];
-
-/// Strip a BOM only where it marks a record start: byte 0, or
-/// immediately after a `\n`. A BOM anywhere else is left as literal
-/// data.
-pub fn strip_record_start_boms(raw: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(raw.len());
-    let mut i = 0;
-    let mut at_record_start = true;
-    while i < raw.len() {
-        if at_record_start && raw[i..].starts_with(&BOM) {
-            i += 3;
-            at_record_start = false;
-            continue;
-        }
-        let b = raw[i];
-        out.push(b);
-        at_record_start = b == b'\n';
-        i += 1;
-    }
-    out
-}
+const BOM: [u8; 3] = [0xEF, 0xBB, 0xBF];
 
 /// One parsed CSV record: borrowed slices for unquoted (or quote-free)
 /// fields, owned bytes only for fields that needed `""`-unescaping.
@@ -67,6 +48,19 @@ impl<'a> Iterator for CsvReader<'a> {
         }
         let data = self.data;
         let mut pos = self.pos;
+
+        // `pos` is always exactly a record start (byte 0, or right
+        // after the previous record's `\n`) -- the only two places a
+        // BOM can legally appear (spec 2.1) -- so this unconditionally
+        // skips one here, in place, with no copy.
+        if data[pos..].starts_with(&BOM) {
+            pos += 3;
+            if pos >= data.len() {
+                self.pos = pos;
+                return None;
+            }
+        }
+
         let mut fields: Record<'a> = Vec::new();
 
         loop {
@@ -247,15 +241,17 @@ mod tests {
         data.extend_from_slice(b"1,2\n");
         data.extend_from_slice(&BOM);
         data.extend_from_slice(b"3,4\n");
-        let cleaned = strip_record_start_boms(&data);
-        assert_eq!(row_strs(&cleaned), vec![vec!["1", "2"], vec!["3", "4"]]);
+        assert_eq!(row_strs(&data), vec![vec!["1", "2"], vec!["3", "4"]]);
 
+        // A BOM mid-field is ordinary data, not a record start, so it
+        // must never be special-cased or stripped.
         let mut mid = b"1,a".to_vec();
         mid.extend_from_slice(&BOM);
         mid.extend_from_slice(b"b,3\n");
+        let expected_field: Vec<u8> = [b"a".as_slice(), &BOM, b"b".as_slice()].concat();
         assert_eq!(
-            strip_record_start_boms(&mid),
-            mid,
+            rows(&mid)[0][1],
+            expected_field,
             "BOM mid-field must NOT be stripped"
         );
     }
