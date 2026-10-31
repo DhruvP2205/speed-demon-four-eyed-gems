@@ -6,41 +6,38 @@
 //! shortest directed-path distance for each query, in input order, or
 //! `-1` if `t` is unreachable from `s`.
 //!
-//! Graph build: `graph.txt` is split into up to MAX_THREADS
-//! line-aligned byte ranges (no edge line split across a thread
-//! boundary) and parsed in parallel into per-thread `u32` triples,
-//! then counting-sorted into one forward CSR (`src/csr.rs`); the same
-//! triples also give an O(n) `has_in_edge` bitmap, so a query whose
-//! target has no in-edge (and isn't its own source) is answered `-1`
-//! without running Dijkstra at all. Nodes are then renumbered by BFS
-//! visitation order (`src/reorder.rs`) -- a pure cache-locality
-//! optimization, since the input's node ids are a random relabelling
-//! with no positional structure -- and every query is translated
-//! through the same mapping before it touches the CSR or bitmap.
-//! Queries are independent, so threads claim them one at a time from
-//! a shared atomic counter (not a static split, since query cost is
-//! very skewed by Dijkstra rank), each running a plain single-source
-//! Dijkstra over a `Workspace` (`src/workspace.rs`): a paged sparse
-//! array (direct indexing, no hashing) whose pages are drawn from a
-//! per-thread pool and returned (zeroed) at the end of each query, so
-//! memory tracks the busiest single query's distinct-page count, not
-//! `n`. It stops as soon as `t` is popped.
+//! Phase breakdown from an earlier version (temporary instrumentation,
+//! not shipped) found parse (~50ms, parallel, ratio ~8.8) and queries
+//! (~390ms, parallel, ratio ~11.6) both parallelizing well, but the
+//! ENTIRE rest of graph loading -- CSR build (~260ms), BFS reorder
+//! (~135ms), remap (~115ms), has_in_edge (~8ms) -- 100% sequential,
+//! together costing more than half the run. This version replaces
+//! the CSR build (by far the largest piece) with a parallel two-pass
+//! design that never stores the parsed edge triples at all (see
+//! `src/csr.rs`'s `build_forward_and_in_edge`); `graph.txt` is now
+//! mapped via `mmap` (`src/mmap_file.rs`) instead of streamed through
+//! `pread_at`, since both passes need direct, repeated, parallel
+//! access to the whole file. BFS reorder (and the paged `Workspace`
+//! it pairs with) is still here: a direct A/B on this exact
+//! rewritten build (identity vs. BFS-ordered node ids, measured, not
+//! assumed) showed the query phase going from ~390ms to ~2.7s
+//! WITHOUT it -- losing cache locality costs roughly 7x on the query
+//! phase, dwarfing the sequential reorder+remap cost (~250ms
+//! combined) it pays for. See PERF.md for the full numbers.
 
 mod csr;
+mod mmap_file;
 mod parse;
 mod reorder;
 mod workspace;
 
 use std::cmp::Reverse;
-use std::fs::{self, File};
 use std::io::{BufWriter, Write};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use csr::{build_forward, has_in_edge_bitmap, Csr};
-use parse::{
-    line_aligned_ranges, parse_edge_triples, parse_query_pairs, parse_uint, pread_at,
-    skip_non_digits,
-};
+use csr::{build_forward_and_in_edge, Csr};
+use mmap_file::MappedFile;
+use parse::{line_aligned_ranges, parse_query_pairs, parse_uint, skip_non_digits};
 use reorder::{bfs_order, remap_bitmap, remap_csr};
 use workspace::Workspace;
 
@@ -49,24 +46,21 @@ const GRAPH_FILE: &str = "graph.txt";
 const QUERIES_FILE: &str = "queries.txt";
 const OUTPUT_FILE: &str = "distances.txt";
 
-/// Read the `n m` header line, returning the parsed values and the
-/// byte offset right after the header's trailing `\n` (where edges
-/// start).
-fn read_header(file: &File) -> (usize, usize, u64) {
-    let mut buf = [0u8; 64];
-    let read = pread_at(file, &mut buf, 0).expect("read graph.txt header");
-    let buf = &buf[..read];
-    let i = skip_non_digits(buf, 0);
-    let (n, i) = parse_uint(buf, i);
-    let i = skip_non_digits(buf, i);
-    let (m, i) = parse_uint(buf, i);
-    let header_end = buf[i..]
+/// Read the `n m` header line directly off the mmap, returning the
+/// parsed values and the byte offset right after the header's
+/// trailing `\n` (where edges start).
+fn read_header(data: &[u8]) -> (usize, usize, usize) {
+    let i = skip_non_digits(data, 0);
+    let (n, i) = parse_uint(data, i);
+    let i = skip_non_digits(data, i);
+    let (m, i) = parse_uint(data, i);
+    let header_end = data[i..]
         .iter()
         .position(|&b| b == b'\n')
         .expect("header has no newline")
         + i
         + 1;
-    (n as usize, m as usize, header_end as u64)
+    (n as usize, m as usize, header_end)
 }
 
 /// Builds the forward CSR and `has_in_edge` bitmap in the input's own
@@ -74,34 +68,12 @@ fn read_header(file: &File) -> (usize, usize, u64) {
 /// renumbered CSR/bitmap plus `new_id_of_old`, so the caller can
 /// translate queries through the same mapping.
 fn load_graph(path: &str) -> (Csr, Vec<bool>, Vec<u32>) {
-    let file = File::open(path).unwrap_or_else(|e| panic!("open {path}: {e}"));
-    let file_len = file.metadata().expect("stat graph.txt").len();
-    let (n, m, header_end) = read_header(&file);
+    let mapped = MappedFile::open(path, false).unwrap_or_else(|e| panic!("open {path}: {e}"));
+    let data = mapped.as_slice();
+    let (n, m, header_end) = read_header(data);
 
-    let ranges = line_aligned_ranges(&file, header_end, file_len, MAX_THREADS);
-    let chunks: Vec<(Vec<u32>, Vec<u32>, Vec<u32>)> = std::thread::scope(|scope| {
-        let file_ref = &file;
-        let handles: Vec<_> = ranges
-            .iter()
-            .map(|&(start, end)| {
-                scope.spawn(move || {
-                    let mut buf = vec![0u8; (end - start) as usize];
-                    pread_at(file_ref, &mut buf, start).expect("read edge range");
-                    parse_edge_triples(&buf)
-                })
-            })
-            .collect();
-        handles
-            .into_iter()
-            .map(|h| h.join().expect("parse worker panicked"))
-            .collect()
-    });
-
-    // Computed from `&chunks` before `build_forward` consumes it by value,
-    // so the ~60 MB parsed edge list is only ever borrowed here, never
-    // held alongside the CSR it gets folded into.
-    let has_in_edge = has_in_edge_bitmap(n, &chunks);
-    let csr = build_forward(n, m, chunks);
+    let ranges = line_aligned_ranges(data, header_end, MAX_THREADS);
+    let (csr, has_in_edge) = build_forward_and_in_edge(n, m, data, &ranges);
 
     let new_id_of_old = bfs_order(n, &csr);
     let remapped_csr = remap_csr(&csr, &new_id_of_old);
@@ -151,13 +123,14 @@ fn main() {
     let n = has_in_edge.len();
 
     let queries_path = format!("{data_dir}/{QUERIES_FILE}");
-    let qdata = fs::read(&queries_path).unwrap_or_else(|e| panic!("open {queries_path}: {e}"));
+    let qmapped = MappedFile::open(&queries_path, true)
+        .unwrap_or_else(|e| panic!("open {queries_path}: {e}"));
     // Node ids in the input are in the ORIGINAL numbering; the CSR and
     // bitmap above are already in BFS-order numbering, so every query
     // must be translated through the same mapping before it touches
     // either. The answer (a distance, or unreachable) is invariant
     // under renumbering, so no mapping back is needed for output.
-    let queries: Vec<(u32, u32)> = parse_query_pairs(&qdata)
+    let queries: Vec<(u32, u32)> = parse_query_pairs(qmapped.as_slice())
         .into_iter()
         .map(|(s, t)| (new_id_of_old[s as usize], new_id_of_old[t as usize]))
         .collect();
@@ -206,7 +179,8 @@ fn main() {
     }
 
     std::fs::create_dir_all(out_dir).expect("create out dir");
-    let out_file = File::create(format!("{out_dir}/{OUTPUT_FILE}")).expect("create output");
+    let out_file =
+        std::fs::File::create(format!("{out_dir}/{OUTPUT_FILE}")).expect("create output");
     let mut writer = BufWriter::new(out_file);
     for result in &results {
         match result {

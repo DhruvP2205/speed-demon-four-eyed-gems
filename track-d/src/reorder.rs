@@ -97,13 +97,34 @@ pub fn remap_bitmap(old: &[bool], new_id_of_old: &[u32]) -> Vec<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::csr::build_forward;
 
+    /// Plain single-threaded counting-sort CSR build, test-only --
+    /// deliberately independent of `csr::build_forward_and_in_edge`
+    /// (which this module's tests should not need to know anything
+    /// about), so these tests only ever depend on the `Csr` type
+    /// itself, not on how one happened to get built.
     fn graph(n: usize, edges: &[(u32, u32, u32)]) -> Csr {
-        let us = edges.iter().map(|&(u, _, _)| u).collect();
-        let vs = edges.iter().map(|&(_, v, _)| v).collect();
-        let ws = edges.iter().map(|&(_, _, w)| w).collect();
-        build_forward(n, edges.len(), vec![(us, vs, ws)])
+        let mut offsets = vec![0u32; n + 1];
+        for &(u, _, _) in edges {
+            offsets[u as usize + 1] += 1;
+        }
+        for i in 0..n {
+            offsets[i + 1] += offsets[i];
+        }
+        let mut cursor = offsets.clone();
+        let mut adj_node = vec![0u32; edges.len()];
+        let mut adj_weight = vec![0u32; edges.len()];
+        for &(u, v, w) in edges {
+            let pos = cursor[u as usize] as usize;
+            adj_node[pos] = v;
+            adj_weight[pos] = w;
+            cursor[u as usize] += 1;
+        }
+        Csr {
+            offsets,
+            adj_node,
+            adj_weight,
+        }
     }
 
     #[test]
