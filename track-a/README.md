@@ -29,7 +29,15 @@ per-thread `Vec`, not a separate small `Vec` per group.
 
 After all 12 threads finish, three cheap, one-time steps replace what
 was previously a sequential merge-then-sort tail that cost more wall
-time than the parallel parsing phase itself:
+time than the parallel parsing phase itself. Each step consumes the
+previous one's per-thread state BY VALUE, not by reference: a thread's
+`groups` HashMap and endpoint/hour name tables drop as soon as its
+counts/errors are merged (step 1), and its own `latencies` drop as
+soon as they're scattered into the shared array (step 2) -- `massif`
+showed these otherwise staying alive, unreleased, all the way to the
+end of `main`, overlapping with the very array they'd just been
+copied into and with the percentile workers' own buffers (see
+PERF.md).
 
 1. Global endpoint and hour-bucket ids are assigned in SORTED byte
    order, so a packed `hour_global_id * num_endpoints +

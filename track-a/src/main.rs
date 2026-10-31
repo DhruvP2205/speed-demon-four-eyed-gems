@@ -277,10 +277,21 @@ fn main() {
         })
         .collect();
 
+    // Consumes `partials` by value: each thread's `groups` HashMap and
+    // name/id tables (no longer needed after this merge) drop at the
+    // end of their own loop iteration, instead of staying alive -- as
+    // the single `Vec<LocalState>` they used to live in -- all the way
+    // to the end of `main`, overlapping with `big_latencies` and the
+    // percentile workers' buffers below. Only each thread's `latencies`
+    // survives, moved into its own slot so pass 2 can still consume it
+    // the same way. Massif confirmed this overlap: the `groups`
+    // HashMap's own table growth was still a live ~9% of peak heap
+    // alongside `big_latencies` and the percentile buffers (see
+    // PERF.md) before this change.
     let mut global_counts = vec![0u32; num_groups];
     let mut global_errors = vec![0u32; num_groups];
-    for (ti, p) in partials.iter().enumerate() {
-        let (ref endpoint_map, ref hour_map) = local_to_global[ti];
+    let mut latencies_per_thread: Vec<Vec<u64>> = Vec::with_capacity(partials.len());
+    for (p, (endpoint_map, hour_map)) in partials.into_iter().zip(&local_to_global) {
         for (&local_group, agg) in &p.groups {
             let local_hour = (local_group >> 16) as usize;
             let local_endpoint = (local_group & 0xFFFF) as usize;
@@ -289,6 +300,7 @@ fn main() {
             global_counts[global_group] += agg.count;
             global_errors[global_group] += agg.errors;
         }
+        latencies_per_thread.push(p.latencies);
     }
 
     // Counting sort: one O(total_lines) pass placing every latency
@@ -303,9 +315,9 @@ fn main() {
 
     let mut big_latencies = vec![0u32; total];
     let mut cursor = prefix.clone();
-    for (ti, p) in partials.iter().enumerate() {
+    for (ti, latencies) in latencies_per_thread.into_iter().enumerate() {
         let (ref endpoint_map, ref hour_map) = local_to_global[ti];
-        for &packed in &p.latencies {
+        for packed in latencies {
             let local_group = (packed >> 32) as u32;
             let latency = packed as u32;
             let local_hour = (local_group >> 16) as usize;
