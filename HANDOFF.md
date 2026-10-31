@@ -376,47 +376,30 @@ in the targets table.
 
 ### Track D -- Traverse (`d_traverse`, `graph.txt`+`queries.txt` -> `distances.txt`)
 
-- **Design**: mmap `graph.txt`; parallel TWO-PASS CSR build (pass 1: atomic
-  per-node degree counts via `Vec<AtomicU32>`, no parsing of `v`/`w`; pass
-  2: full parse, atomic per-node cursor claims each edge's final CSR slot
-  directly -- the parsed `(u,v,w)` triples are never stored as a separate
-  structure); `has_in_edge` bitmap set inline in pass 2 for the O(1)
-  no-in-edge -> -1 short circuit; BFS-order node renumbering for cache
-  locality (forward-only, since the spec's main body is strongly
-  connected) -- confirmed by measurement to matter hugely (identity
-  mapping: queries ~380ms -> ~2.7s, a 7x regression) so it stays; per-query
-  workspace is a paged sparse array (`PAGE_SIZE=1024`, swept against 256
-  and 4096 and chosen as the winner) with direct index arithmetic, no
-  hashing; `u64::MAX` sentinel avoids a separate stamp field; dynamic
-  per-query work distribution via a shared `AtomicUsize` counter (measured
-  97% parallel efficiency, i.e. load-balancing was never the problem).
-- **Board**: T 0.631 s, M 112 MB, lines 927, 50.5 pts. `scc` reports 919
-  Code lines (close). Board run IDs in `track-d/PERF.md`'s Board runs
-  table: step 0 is commit `82161a6` (T 0.772/M 201/46.3pts); step 1 (the
-  two-pass CSR + confirmed-necessary BFS reorder, commit `e7fe313`) is
-  logged as `*(pending push)*` with only CI numbers (2-core CI *regressed*
-  wall 2.689s->3.358s while M improved 235->112MB -- diagnosed as the
-  two-pass parse doing ~1.5x the total parsing work, a net win at 12
-  threads but a net loss at CI's 2 -- **confirm this already reached the
-  board and get a real board run ID into that row**, since the currently
-  quoted board T 0.631/M 112 looks like it already reflects this change
-  (M matches CI's 112.18MB closely) but the PERF.md row itself still says
-  "pending push").
+- **Design**: parallel line-range parsing into forward and reverse CSRs;
+  graph-signal-selected BFS renumbering; query-adaptive ALT only when
+  reverse-edge weight symmetry and sampled query hardness both justify it;
+  and bidirectional Dijkstra with reusable touched-node workspaces. This
+  supersedes the older forward-only two-pass CSR, paged workspace, and
+  custom-heap implementation.
+- **Local validation**: the available full random fixture matched SHA-256
+  exactly and ran in 3.18-4.67 s on Windows; the full grid fixture also
+  matched exactly (131.3 s on Windows). Edge, random, and grid outputs all
+  matched their stored reference hashes. The ported release suite has 48
+  passing tests.
+- **Previous CI baseline**: commit `f6a186a` (custom 4-ary heap) passed the
+  official seed-1 and holdout checks; GitHub Actions run `41250490622`
+  measured wall 2.4998 s, exec 2.3454 s, and 111,319,723 bytes on its
+  2-core runner. The adaptive bidirectional implementation is the next
+  pushed measurement; board confirmation is still pending.
 - **Leader**: T 0.127 s, M 71 MB.
 - **Target** (mission, Phase 3): T <= 0.17 s.
-- **Known bottleneck / next steps**: Phase 3 asks for a fresh phase
-  breakdown (parse/CSR build/in-edge bitmap/reorder/queries/output) on the
-  CURRENT code first, since the two-pass rewrite changed the balance
-  between load and query phases -- do not assume step-1's pre-rewrite
-  breakdown (CSR build was the single biggest piece before pass 1/2 were
-  split) still holds. If queries still dominate: BinaryHeap -> radix/4-ary
-  heap is the mission's suggested next move. If load dominates: the
-  two-pass mmap parse is already in place; the open item is re-measuring
-  on the BOARD (not CI's 2 cores) whether BFS reorder still pays given the
-  two-pass build's own new cost profile -- it was confirmed necessary on
-  the OLD single-pass build (7x regression without it) but has not been
-  re-A/B'd since the two-pass rewrite landed.
-- **Phase 3 not started** (task #22, pending).
+- **Known bottleneck / next steps**: measure reverse-CSR and adaptive
+  preprocessing costs on the board, then tune only thresholds that improve
+  the official score. Remove measurement-only environment overrides during
+  final cleanup.
+- **Phase 3 implementation is complete locally**; official CI and board
+  confirmation for the ported implementation are pending.
 
 ### Line-count reconciliation note
 
@@ -436,7 +419,7 @@ worth a direct look).
 | 1a | B memory | ~8h (shared w/ 1b) | 835MB -> <=50MB | **DONE (pending board confirm)** -- position-index removal shipped (`0465a16`); CI: M -28.5% cgroup / -40.7% massif, T -15.7% bonus |
 | 1b | B time | (shared w/ 1a) | 1.084s -> <=0.30s | **DONE for this round (pending board confirm)** -- tokenizer double-lowercase fix shipped (`9cacecd`), ~15% faster on scan_docs locally (12-thread, paired); SIMD tokenization identified as the next lever but out of scope this round |
 | 2 | A | ~5h | T<=0.10s, M<=25MB | **DONE for this round (pending board confirm)** -- by-value merge fix shipped (`7f0b249`), CI: M -41.8% cgroup / -24.5% massif; still short of <=25MB (structural latencies-storage floor identified); T unaffected as expected |
-| 3 | D | ~6h | T<=0.17s | IN PROGRESS -- 4-ary Dijkstra heap implemented and locally validated; official board confirmation pending |
+| 3 | D | ~6h | T<=0.17s | IN PROGRESS -- adaptive bidirectional/ALT implementation ported and locally hash-validated; official CI/board confirmation pending |
 | 4 | C (conditional) | ~4h | T<=0.12s, M<=40MB | NOT STARTED -- only if C can beat the lowest counted track after 1-3 |
 | 5 | Global tuning | ~4h (Nov 1) | thread sweep, MALLOC_ARENA_MAX, PGO | NOT STARTED |
 | 6 | Lines + freeze prep | (Nov 2 morning; team freeze 10:00 UTC) | dead code removal, final verification, READMEs/PERF.md complete, LICENSE confirmed | NOT STARTED |
