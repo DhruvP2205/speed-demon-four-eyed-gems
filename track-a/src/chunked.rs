@@ -1,114 +1,91 @@
-//! Parallel, bounded-memory chunked file reading: split a file into
-//! line-aligned byte ranges for N worker threads, then stream each
-//! range in bounded sub-chunks so no thread ever holds the whole file
-//! (or even one whole range) in memory at once.
+//! Split an in-memory log buffer into N line-aligned byte ranges for
+//! parallel processing. Unlike Track C's CSV, this format has no
+//! embedded newlines inside a field -- every `\n` genuinely ends a
+//! record, so finding "the next line start" is a plain, independent,
+//! parallel byte search per target offset, with no quote-nesting
+//! state to track and no speculate-then-verify step needed at all.
 
-use std::fs::File;
-use std::io;
-
-#[cfg(unix)]
-pub fn pread_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<usize> {
-    use std::os::unix::fs::FileExt;
-    file.read_at(buf, offset)
-}
-
-#[cfg(windows)]
-pub fn pread_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<usize> {
-    use std::os::windows::fs::FileExt;
-    file.seek_read(buf, offset)
-}
-
-const PROBE_SIZE: usize = 4096; // comfortably larger than any one generated line
-                                // Bounds peak memory at MAX_THREADS * SUB_CHUNK_SIZE for the read buffers
-                                // (12 MB at 1 MiB; this track's lines average ~77 bytes, so 128 KiB is still
-                                // over 1,600 lines per read -- plenty of batching, an order of magnitude less
-                                // memory).
-const SUB_CHUNK_SIZE: usize = 128 * 1024;
-
-/// Find the first `\n` at or after `offset`, returning the offset just
-/// past it (i.e. the start of the next line). Reads small probe buffers
-/// rather than the whole file -- used only to realign the handful of
-/// thread-boundary candidates, not per-line.
-fn next_line_start(file: &File, offset: u64, file_len: u64) -> u64 {
-    if offset >= file_len {
-        return file_len;
-    }
-    let mut probe = vec![0u8; PROBE_SIZE];
-    let mut pos = offset;
-    loop {
-        let want = PROBE_SIZE.min((file_len - pos) as usize);
-        if want == 0 {
-            return file_len;
-        }
-        let n = pread_at(file, &mut probe[..want], pos).expect("probe read");
-        if let Some(idx) = probe[..n].iter().position(|&b| b == b'\n') {
-            return pos + idx as u64 + 1;
-        }
-        pos += n as u64;
-        if n < want {
-            return file_len; // hit EOF without finding '\n' (e.g. no trailing newline)
-        }
-    }
-}
-
-/// Split `[0, file_len)` into up to `n` line-aligned, non-overlapping
-/// ranges covering the whole file with no line split across a boundary
-/// and none double-counted.
-pub fn line_aligned_ranges(file: &File, file_len: u64, n: usize) -> Vec<(u64, u64)> {
-    if file_len == 0 || n == 0 {
+/// Split `data` into up to `n` non-overlapping, line-aligned ranges
+/// covering `data` with no line split across a boundary.
+pub fn line_aligned_ranges(data: &[u8], n: usize) -> Vec<(usize, usize)> {
+    let len = data.len();
+    if len == 0 || n == 0 {
         return Vec::new();
     }
-    let n = n.min(file_len as usize).max(1);
-    let base = file_len / n as u64;
+    let n = n.min(len).max(1);
+    let targets: Vec<usize> = (1..n).map(|i| len * i / n).collect();
 
-    let mut boundaries = vec![0u64];
-    for i in 1..n {
-        let candidate = base * i as u64;
-        boundaries.push(next_line_start(file, candidate, file_len));
+    let mut boundaries = vec![0usize];
+    for &t in &targets {
+        let b = match data[t..].iter().position(|&b| b == b'\n') {
+            Some(idx) => t + idx + 1,
+            None => len,
+        };
+        boundaries.push(b);
     }
-    boundaries.push(file_len);
+    boundaries.push(len);
     boundaries.dedup();
 
-    let mut ranges = Vec::with_capacity(boundaries.len() - 1);
-    for w in boundaries.windows(2) {
-        if w[1] > w[0] {
-            ranges.push((w[0], w[1]));
-        }
-    }
-    ranges
+    boundaries
+        .windows(2)
+        .filter(|w| w[1] > w[0])
+        .map(|w| (w[0], w[1]))
+        .collect()
 }
 
-/// Stream `[start, end)` of `file` in bounded-size sub-chunks, calling
-/// `on_line` for each complete line (without its trailing `\n`). A line
-/// split across two sub-chunk reads is reassembled via a small carry
-/// buffer, so correctness doesn't depend on sub-chunk size -- only peak
-/// memory does (bounded to roughly SUB_CHUNK_SIZE + one line).
-pub fn for_each_line_in_range<F: FnMut(&[u8])>(file: &File, start: u64, end: u64, mut on_line: F) {
-    let mut pos = start;
-    let mut carry: Vec<u8> = Vec::new();
-    let mut buf = vec![0u8; SUB_CHUNK_SIZE];
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    while pos < end {
-        let want = SUB_CHUNK_SIZE.min((end - pos) as usize);
-        let n = pread_at(file, &mut buf[..want], pos).expect("chunk read");
-        if n == 0 {
-            break;
-        }
-        pos += n as u64;
+    fn line_count(data: &[u8]) -> usize {
+        data.split(|&b| b == b'\n')
+            .filter(|l| !l.is_empty())
+            .count()
+    }
 
-        carry.extend_from_slice(&buf[..n]);
-        if let Some(idx) = carry.iter().rposition(|&b| b == b'\n') {
-            for line in carry[..idx].split(|&b| b == b'\n') {
-                on_line(line);
-            }
-            carry.drain(..=idx);
+    fn reconstruct_line_count(data: &[u8], n: usize) -> usize {
+        line_aligned_ranges(data, n)
+            .iter()
+            .map(|&(s, e)| line_count(&data[s..e]))
+            .sum()
+    }
+
+    #[test]
+    fn splitting_never_changes_the_total_line_count() {
+        let data = b"a b c d e\n".repeat(1000);
+        let baseline = line_count(&data);
+        for n in [1, 2, 3, 7, 12] {
+            assert_eq!(reconstruct_line_count(&data, n), baseline, "n={n}");
         }
     }
-    if !carry.is_empty() {
-        for line in carry.split(|&b| b == b'\n') {
-            if !line.is_empty() {
-                on_line(line);
+
+    #[test]
+    fn ranges_cover_the_whole_buffer_with_no_gap_or_overlap() {
+        let data = b"a b c d e\n".repeat(1000);
+        for n in [1, 2, 3, 7, 12] {
+            let ranges = line_aligned_ranges(&data, n);
+            let mut expected_start = 0;
+            for &(start, end) in &ranges {
+                assert_eq!(start, expected_start, "n={n}");
+                assert!(end > start, "n={n}");
+                expected_start = end;
             }
+            assert_eq!(expected_start, data.len(), "n={n}");
+        }
+    }
+
+    #[test]
+    fn empty_buffer_produces_no_ranges() {
+        assert_eq!(line_aligned_ranges(b"", 12), Vec::new());
+    }
+
+    #[test]
+    fn no_trailing_newline_at_eof_is_still_covered() {
+        let mut data = b"a b c d e\n".repeat(100);
+        data.extend_from_slice(b"x y z 1 2"); // last line, no trailing '\n'
+        let baseline = line_count(&data);
+        for n in [1, 2, 3, 7, 12] {
+            assert_eq!(reconstruct_line_count(&data, n), baseline, "n={n}");
         }
     }
 }
