@@ -61,11 +61,19 @@ is the only reason there's a second phase:
    only on its own bytes, so every occurrence of a given name across
    all 12 phase-1 threads lands in the same shard index -- each
    phase-2 thread owns its shard exclusively and needs no lock either.
-   It does the real, exact dedup (hash then full byte comparison via
-   `HashSet<&[u8]>`, never hash-only, so a collision can never
-   silently merge two different names) and emits a per-country
-   distinct count for its shard. Summing the 12 shards' counts per
-   country gives the exact global `names_distinct`.
+   No hashing at all: collects its shard's `(country, name)` pairs
+   into one flat `Vec`, sorts it (still an exact byte comparison,
+   never hash-only -- a collision can never silently merge two
+   different names), and counts a new distinct name wherever
+   consecutive sorted entries differ. An earlier version used a
+   `HashMap<u16, HashSet<&[u8]>>` instead (first with std's default
+   SipHash, then a hand-rolled FNV-1a hasher once phase 2 became the
+   single largest remaining cost in the program) -- an interleaved,
+   5-round A/B measured the sort consistently faster, non-overlapping
+   timing ranges (see PERF.md): the two nested hash structures' own
+   overhead (table growth, probing) cost more than the hashing itself
+   did. Summing the 12 shards' counts per country gives the exact
+   global `names_distinct`.
 
 This replaces an earlier version that funnelled every name through a
 single global, 64-way mutex-sharded `InternTable` -- correct, but a
@@ -86,10 +94,10 @@ None (Rust standard library only).
 
 ## With another 24 hours
 
-- Time profiling on the real board/CI numbers for this exact design,
-  to find the next-largest cost (`CsvReader::next()` still allocates a
-  fresh `Vec` per record for its field list; phase 2's `HashMap`/
-  `HashSet` dedup also has real per-entry overhead at ~2M names).
+- `CsvReader::next()` still allocates a fresh `Vec` per record for its
+  field list -- the next candidate hot-loop allocation to remove, per
+  phase instrumentation on this exact build showing phase 1 (parsing)
+  as the second-largest remaining phase after phase 2's dedup.
 - PGO (train on a seed other than 1, per the organiser's allowlisted
   `llvm-tools` image) if it clears the break-even bar for the lines it
   costs.

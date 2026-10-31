@@ -39,11 +39,16 @@
 //!   shard depends only on its own bytes, every occurrence of a given
 //!   name across all 12 phase-1 threads lands in the SAME shard index
 //!   -- so each phase-2 thread owns its shard outright and needs no
-//!   lock either. It does the real, exact dedup (hash then full byte
-//!   comparison via `HashSet<&[u8]>`, never hash-only -- a collision
-//!   must never silently merge two different names) and emits a
-//!   per-country distinct count for its shard. Summing the 12 shards'
-//!   counts per country gives the exact global `names_distinct`.
+//!   lock either. No hashing at all: sorts its shard's `(country,
+//!   name)` pairs (still an exact byte comparison, never hash-only --
+//!   a collision must never silently merge two different names) and
+//!   counts a new distinct name wherever consecutive sorted entries
+//!   differ, then emits a per-country distinct count for its shard.
+//!   Summing the 12 shards' counts per country gives the exact global
+//!   `names_distinct`. An earlier version used a `HashMap<u16,
+//!   HashSet<&[u8]>>` instead; a measured A/B (see PERF.md) found the
+//!   sort consistently faster once this phase became the largest
+//!   remaining cost in the program.
 
 mod chunked;
 mod csv_parser;
@@ -51,7 +56,6 @@ mod format;
 mod mmap_file;
 
 use std::borrow::Cow;
-use std::collections::{HashMap, HashSet};
 
 use chunked::record_aligned_ranges;
 use csv_parser::CsvReader;
@@ -223,9 +227,7 @@ impl CountryAgg {
 
 /// FNV-1a: fast and deterministic, which is all shard assignment needs
 /// -- it only has to be a stable function of the bytes, never a
-/// security property. Exact equality (never hash-only) is what
-/// actually guards `names_distinct`'s correctness, in phase 2's
-/// `HashSet<&[u8]>`.
+/// security property.
 #[inline]
 fn fnv1a(bytes: &[u8]) -> u64 {
     let mut hash: u64 = 0xcbf29ce484222325;
@@ -282,16 +284,37 @@ fn process_chunk<'a>(
 /// its own bytes, so every occurrence of a given name across all 12
 /// phase-1 threads lands in this same shard -- this thread owns it
 /// exclusively, so no lock is needed here either.
+///
+/// No hashing anywhere: collects every `(country, name)` pair assigned
+/// to this shard into one flat `Vec`, sorts it (lexicographic on
+/// `name`, so equal `(country, name)` pairs become adjacent -- still
+/// an EXACT byte comparison, never hash-only), then counts a new
+/// distinct name each time consecutive entries differ. Replaced an
+/// earlier `HashMap<u16, HashSet<&[u8]>>` version (first with std's
+/// default SipHash, then with a hand-rolled FNV-1a hasher once
+/// profiling showed phase 2 was the single largest remaining phase):
+/// an interleaved, 5-round A/B against that FNV-hashed version showed
+/// this sort-based design consistently faster with non-overlapping
+/// timing ranges (see PERF.md) -- the two nested hash structures' own
+/// overhead (table growth, probing) turned out to cost more than the
+/// hashing itself did.
 fn dedup_shard<'a>(results: &'a [ThreadResult<'a>], shard: usize) -> Vec<u64> {
-    let mut sets: HashMap<u16, HashSet<&'a [u8]>> = HashMap::new();
+    let total: usize = results.iter().map(|r| r.shard_bufs[shard].len()).sum();
+    let mut pairs: Vec<(u16, &'a [u8])> = Vec::with_capacity(total);
     for result in results {
         for (country_idx, name) in &result.shard_bufs[shard] {
-            sets.entry(*country_idx).or_default().insert(name.as_ref());
+            pairs.push((*country_idx, name.as_ref()));
         }
     }
+    pairs.sort_unstable();
+
     let mut counts = vec![0u64; NUM_SLOTS];
-    for (country_idx, set) in sets {
-        counts[country_idx as usize] = set.len() as u64;
+    let mut prev: Option<(u16, &[u8])> = None;
+    for &(country_idx, name) in &pairs {
+        if prev != Some((country_idx, name)) {
+            counts[country_idx as usize] += 1;
+            prev = Some((country_idx, name));
+        }
     }
     counts
 }
