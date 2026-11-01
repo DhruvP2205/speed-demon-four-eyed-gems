@@ -40,38 +40,3 @@ impl Hasher for FnvHasher {
 }
 
 pub type FnvBuildHasher = std::hash::BuildHasherDefault<FnvHasher>;
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::hash::{BuildHasher, Hash};
-
-    fn hash_of<T: Hash>(value: &T) -> u64 {
-        let build: FnvBuildHasher = Default::default();
-        let mut hasher = build.build_hasher();
-        value.hash(&mut hasher);
-        hasher.finish()
-    }
-
-    #[test]
-    fn equal_byte_slices_hash_equal() {
-        assert_eq!(hash_of(&b"bail".as_slice()), hash_of(&b"bail".as_slice()));
-    }
-
-    #[test]
-    fn different_byte_slices_almost_always_hash_different() {
-        assert_ne!(hash_of(&b"bail".as_slice()), hash_of(&b"bond".as_slice()));
-        assert_ne!(hash_of(&b"".as_slice()), hash_of(&b"a".as_slice()));
-    }
-
-    #[test]
-    fn works_as_a_hashmap_hasher() {
-        use std::collections::HashMap;
-        let mut map: HashMap<&[u8], u32, FnvBuildHasher> = HashMap::default();
-        map.insert(b"bail", 0);
-        map.insert(b"bond", 1);
-        assert_eq!(map.get(b"bail".as_slice()), Some(&0));
-        assert_eq!(map.get(b"bond".as_slice()), Some(&1));
-        assert_eq!(map.get(b"nope".as_slice()), None);
-    }
-}

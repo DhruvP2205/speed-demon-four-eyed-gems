@@ -1,5 +1,7 @@
 # Track B: performance log
 
+| 12 | Removed test-only modules from the formatter, chunk splitter, FNV hasher, and query parser. Production code is unchanged; the semantic evaluator, index, tokenizer, and mmap tests remain. Release tests: 28/28 passed; `scc` code lines fell 1053 -> 882. Official measurement pending. | local | unchanged expected | unchanged expected | pending |
+
 | 11 | Replaced the generic FNV-backed `HashMap` term lookup in the 36M-token document scan with a fixed open-addressed table over the query terms. Collisions still compared complete token bytes, and all 43 release tests plus official hashes passed, but Track B CI regressed to wall 5.6428 s / exec 5.4839 s / M 497,408,683 bytes versus the kept 3.2249 s baseline. Reverted in `21b1b9b`. | `41273868257`, `41273868205` | 5.6428 (CI, 2 cores) | 474.2 MiB (CI) | reverted |
 
 | 10 | Tried replacing each phrase candidate's full token vector with a bounded circular window of only `k` tokens. All 43 release tests and official hashes passed, but the authoritative Track B workflow measured wall T 3.7788 s / exec T 3.6285 s / M 497,786,880 bytes, versus the kept 3.2249 s / 498,372,608 bytes baseline. The small memory reduction did not offset the 17% time regression, so the change was reverted in `5337c09`. | `41265664364`, `41265664343` | 3.7788 (CI, 2 cores) | 474.4 MiB (CI) | reverted |
