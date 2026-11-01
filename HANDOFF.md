@@ -177,7 +177,7 @@ organiser's allowlisted `llvm-tools` image, commit the resulting
 ## 3. Current state per track
 
 Numbers below are the MISSION's fresh real board numbers (given directly by
-the user, current as of 2026-10-31) unless marked otherwise. "Lines" is the
+the user, current as of 2026-11-01) unless marked otherwise. "Lines" is the
 mission's reported board S; where it differs from a fresh local `scc`
 count, both are given -- `scc` run on `track-<x>/src` reports its `Code`
 column (excludes comments/blanks), which is what the board's own S count
