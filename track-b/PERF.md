@@ -1,5 +1,7 @@
 # Track B: performance log
 
+| 7 | Tried core-aware fan-out using `available_parallelism()`, capped at 12, for indexing and query evaluation. Official verification passed and the hash matched, while CI memory improved from the prior ~499.7 MB to 485,983,573 bytes. However, wall T regressed to 5.3816 s (exec 5.1681 s), worse than the prior ~5.03 s result and far worse than the pre-experiment ~3.84 s baseline. Reverted immediately in `41a63c7`; the memory win did not offset the time loss. | `41256786776`, `41256786782` | 5.3816 (CI, 2 cores) | 463.5 MiB (CI) | reverted |
+
 | 6 | Tried fusing tokenizer classification and ASCII lowercasing into one helper. Official hash and all 43 release tests passed, but Track B workflow `41255656816` measured wall T 5.0294 s, exec T 4.8691 s, M 499,666,944 bytes versus the prior CI baseline of about 3.84 s and 499.73 MB. The change was reverted immediately in `12b80f6`; it was a correctness-preserving performance regression, likely due to worse optimizer/code generation for the `Option<u8>` path. | `41255656816` | 5.0294 (CI, 2 cores) | 476.3 MiB (CI) | reverted |
 
 Every step from the reference to your final version, each with the live-board run ID that measured it. Judges check that the run IDs exist and that each change moved the way you say it did.
