@@ -1,5 +1,7 @@
 # Track B: performance log
 
+| 14 | Reverted candidate `060b232` after the official Track B workflow. The tokenizer arithmetic and removal of worker-side document offsets passed all correctness gates and local template hashes, but official full-scale measurement regressed to wall 5.6244 s / exec 5.4614 s / 498,397,184 bytes versus the retained ~3.2249 s baseline. The regression outweighs the local-only improvement; source is restored to the board-winning shape in `90fa23a`. | `41276874963` | 5.6244 (CI) | 474.9 MiB | reverted |
+
 | 12 | Removed test-only modules from the formatter, chunk splitter, FNV hasher, and query parser. Production code is unchanged; 28 release tests and official hashes passed. The board scored commit `9752e92` at 41.361 points, up from 40.898, with 1.136 s / 500 MB / 898 lines. Keep this line-count reduction based on the authoritative board result despite noisy shared-run CI. | board `9752e92` | 1.136 (board) | 500 MB (board) | kept |
 
 | 11 | Replaced the generic FNV-backed `HashMap` term lookup in the 36M-token document scan with a fixed open-addressed table over the query terms. Collisions still compared complete token bytes, and all 43 release tests plus official hashes passed, but Track B CI regressed to wall 5.6428 s / exec 5.4839 s / M 497,408,683 bytes versus the kept 3.2249 s baseline. Reverted in `21b1b9b`. | `41273868257`, `41273868205` | 5.6428 (CI, 2 cores) | 474.2 MiB (CI) | reverted |
