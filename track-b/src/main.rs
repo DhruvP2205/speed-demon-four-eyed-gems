@@ -64,14 +64,12 @@ fn main() {
     let dmapped =
         MappedFile::open(&docs_path, true).unwrap_or_else(|e| panic!("open {docs_path}: {e}"));
     let docs_data = dmapped.as_slice();
-    let thread_count = std::thread::available_parallelism()
-        .map_or(MAX_THREADS, |count| count.get().min(MAX_THREADS).max(1));
-    let ranges = line_aligned_ranges(docs_data, thread_count);
+    let ranges = line_aligned_ranges(docs_data, MAX_THREADS);
     let index = build_index(docs_data, &ranges, &query_index.term_bytes);
 
     let num_queries = query_index.queries.len();
-    let query_thread_count = thread_count.min(num_queries.max(1));
-    let chunk_ranges = even_chunks(num_queries, query_thread_count);
+    let thread_count = MAX_THREADS.min(num_queries.max(1));
+    let chunk_ranges = even_chunks(num_queries, thread_count);
 
     let mut results: Vec<Vec<u32>> = Vec::with_capacity(num_queries);
     results.resize_with(num_queries, Vec::new);
