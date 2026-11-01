@@ -20,10 +20,9 @@
 pub const MAX_TOKEN_LEN: usize = 32;
 
 #[inline]
-fn lower_token_byte(b: u8) -> u8 {
-    let lower = b | 0x20;
-    if lower >= b'a' && lower <= b'z' {
-        lower
+fn to_lower(b: u8) -> u8 {
+    if b.is_ascii_uppercase() {
+        b + 32
     } else {
         b
     }
@@ -31,8 +30,8 @@ fn lower_token_byte(b: u8) -> u8 {
 
 #[inline]
 fn is_token_byte(b: u8) -> bool {
-    let lower = b | 0x20;
-    (lower >= b'a' && lower <= b'z') || (b >= b'0' && b <= b'9')
+    let lower = to_lower(b);
+    lower.is_ascii_lowercase() || lower.is_ascii_digit()
 }
 
 /// Calls `f(position, lowered_token)` for every token in `text`, in
@@ -60,7 +59,7 @@ pub fn for_each_token(text: &[u8], buf: &mut [u8; MAX_TOKEN_LEN], mut f: impl Fn
             let mut len = 0usize;
             while i < n && is_token_byte(text[i]) {
                 if len < MAX_TOKEN_LEN {
-                    buf[len] = lower_token_byte(text[i]);
+                    buf[len] = to_lower(text[i]);
                 }
                 len += 1;
                 i += 1;
