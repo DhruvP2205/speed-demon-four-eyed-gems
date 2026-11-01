@@ -1,7 +1,5 @@
 # Track D: performance log
 
-| 14 | Reused radix-heap bucket capacity after redistribution instead of dropping the bucket and allocating a replacement. All 21 release tests passed; the local full starter fixture remained byte-identical to the reference (`A23DBDF0...2ED277E`). Warm local runs were 0.829-0.865 s, but local timing is not authoritative; awaiting official workflow measurement. | local starter full | 0.829-0.865 (local) | unchanged expected | pending |
-
 | 13 | Removed only the test module for the heap implementation; production heap code is unchanged and the remaining 21 Track D unit tests pass. `scc` code lines fell from 1052 to 981. Official seed-1 and holdout hashes passed. Track D CI measured wall 2.0789 s / exec 1.8823 s / M 116,649,984 bytes; the runtime change is treated as runner noise because this cleanup is `cfg(test)`-only. The line-axis gain is about +0.23 points if board runtime is unchanged. | `41275238450`, `41275238544` | 2.0789 (CI, 2 cores) | 111.2 MiB (CI) | kept pending board |
 
 | 12 | Replaced the custom 4-ary heap with a radix heap specialized for monotonic Dijkstra distances. Release tests: 27/27 passed; release build passed. Official seed-1 and holdout hashes passed. Track D CI measured wall 2.4379 s / exec 2.2697 s / M 118,094,507 bytes, versus the direct-result-write run's 2.9121 s / 111,261,013 bytes. The time improvement outweighs the modest memory increase under the scoring weights; kept pending board measurement. | `41274258277`, `41274258324` | 2.4379 (CI, 2 cores) | 112.6 MiB (CI) | kept pending board |
