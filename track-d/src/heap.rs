@@ -1,80 +1,77 @@
-//! A quaternary (4-ary) min-heap of `(key, value)` pairs, specialized
-//! for Dijkstra's `(distance, node)` entries -- the mission's Phase 3
-//! suggestion for a queries-dominated profile (see PERF.md). A 4-ary
-//! heap halves the tree height of a binary heap for the same element
-//! count, trading more same-level comparisons (up to 3 children
-//! instead of 1) for fewer levels to sift through on `pop`, which is
-//! the hot operation in Dijkstra (one pop per settled node, plus one
-//! push per relaxed edge). No `Reverse` wrapper needed: this is a
-//! plain min-heap on `key` directly.
+//! A radix min-heap of `(key, value)` pairs for Dijkstra's
+//! monotonic nonnegative distance keys. Redistributing a bucket after
+//! each new minimum avoids tree comparisons on the hot pop path.
 
 pub struct QuaternaryHeap<T> {
-    data: Vec<(u64, T)>,
+    buckets: Vec<Vec<(u64, T)>>,
+    last: u64,
+    len: usize,
 }
 
 impl<T: Copy> QuaternaryHeap<T> {
     pub fn new() -> Self {
-        QuaternaryHeap { data: Vec::new() }
+        QuaternaryHeap {
+            buckets: (0..65).map(|_| Vec::new()).collect(),
+            last: 0,
+            len: 0,
+        }
     }
 
     #[inline]
     pub fn clear(&mut self) {
-        self.data.clear();
+        for bucket in &mut self.buckets {
+            bucket.clear();
+        }
+        self.last = 0;
+        self.len = 0;
     }
 
     #[cfg(test)]
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.data.is_empty()
+        self.len == 0
     }
 
     #[inline]
     pub fn push(&mut self, key: u64, value: T) {
-        self.data.push((key, value));
-        let mut i = self.data.len() - 1;
-        while i > 0 {
-            let parent = (i - 1) / 4;
-            if self.data[i].0 < self.data[parent].0 {
-                self.data.swap(i, parent);
-                i = parent;
-            } else {
-                break;
-            }
-        }
+        debug_assert!(key >= self.last);
+        let bucket = Self::bucket_index(self.last, key);
+        self.buckets[bucket].push((key, value));
+        self.len += 1;
     }
 
     #[inline]
     pub fn pop(&mut self) -> Option<(u64, T)> {
-        if self.data.is_empty() {
+        if self.len == 0 {
             return None;
         }
-        let last = self.data.len() - 1;
-        self.data.swap(0, last);
-        let result = self.data.pop();
-        let len = self.data.len();
-        let mut i = 0;
-        loop {
-            let first_child = 4 * i + 1;
-            if first_child >= len {
-                break;
-            }
-            let last_child = (first_child + 4).min(len);
-            let mut smallest = first_child;
-            let mut smallest_key = self.data[first_child].0;
-            for c in (first_child + 1)..last_child {
-                if self.data[c].0 < smallest_key {
-                    smallest = c;
-                    smallest_key = self.data[c].0;
-                }
-            }
-            if smallest_key < self.data[i].0 {
-                self.data.swap(i, smallest);
-                i = smallest;
-            } else {
-                break;
+        if self.buckets[0].is_empty() {
+            let bucket_index = (1..65)
+                .find(|&i| !self.buckets[i].is_empty())
+                .expect("non-empty radix heap has a populated bucket");
+            let new_last = self.buckets[bucket_index]
+                .iter()
+                .map(|&(key, _)| key)
+                .min()
+                .expect("bucket is non-empty");
+            self.last = new_last;
+            let bucket = std::mem::take(&mut self.buckets[bucket_index]);
+            for entry in bucket {
+                let i = Self::bucket_index(self.last, entry.0);
+                self.buckets[i].push(entry);
             }
         }
-        result
+        self.len -= 1;
+        self.buckets[0].pop()
+    }
+
+    #[inline]
+    fn bucket_index(last: u64, key: u64) -> usize {
+        if key == last {
+            0
+        } else {
+            (64 - (key ^ last).leading_zeros()) as usize
+        }
     }
 }
 

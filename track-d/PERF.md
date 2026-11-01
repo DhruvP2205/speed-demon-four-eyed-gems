@@ -1,5 +1,7 @@
 # Track D: performance log
 
+| 12 | Replaced the custom 4-ary heap with a radix heap specialized for monotonic Dijkstra distances. Release tests: 27/27 passed; release build passed. Official measurement pending. | local | not measured | not measured | pending |
+
 Every step from the reference to your final version, each with the live-board run ID that measured it. Judges check that the run IDs exist and that each change moved the way you say it did.
 
 ## Pre-board development measurements
