@@ -54,11 +54,12 @@ impl<T: Copy> QuaternaryHeap<T> {
                 .min()
                 .expect("bucket is non-empty");
             self.last = new_last;
-            let bucket = std::mem::take(&mut self.buckets[bucket_index]);
-            for entry in bucket {
+            let mut bucket = std::mem::take(&mut self.buckets[bucket_index]);
+            for entry in bucket.drain(..) {
                 let i = Self::bucket_index(self.last, entry.0);
                 self.buckets[i].push(entry);
             }
+            self.buckets[bucket_index] = bucket;
         }
         self.len -= 1;
         self.buckets[0].pop()
