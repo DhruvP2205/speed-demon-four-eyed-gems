@@ -352,50 +352,48 @@ fn main() {
 
     let mut percentiles = vec![(0u32, 0u32, 0u32); num_groups];
     {
-        let mut remaining: &mut [u32] = &mut big_latencies;
-        let mut prev_group = 0usize;
-        let mut prev_byte = 0usize;
-        let mut thread_slices: Vec<(&mut [u32], usize, usize, usize)> = Vec::new();
-        for &g_end in &group_boundaries[1..] {
-            let byte_end = prefix[g_end] as usize;
-            let (this_slice, rest) = remaining.split_at_mut(byte_end - prev_byte);
-            thread_slices.push((this_slice, prev_group, g_end, prev_byte));
-            remaining = rest;
-            prev_group = g_end;
-            prev_byte = byte_end;
-        }
+            let mut remaining: &mut [u32] = &mut big_latencies;
+            let mut prev_group = 0usize;
+            let mut prev_byte = 0usize;
+            let mut thread_slices: Vec<(&mut [u32], usize, usize, usize)> = Vec::new();
+            let mut percentile_slices: Vec<(&mut [(u32, u32, u32)], usize)> = Vec::new();
+            let mut remaining_percentiles: &mut [(u32, u32, u32)] = &mut percentiles;
+            for &g_end in &group_boundaries[1..] {
+                let byte_end = prefix[g_end] as usize;
+                let (this_slice, rest) = remaining.split_at_mut(byte_end - prev_byte);
+                thread_slices.push((this_slice, prev_group, g_end, prev_byte));
+                remaining = rest;
+                let (this_percentiles, rest_percentiles) =
+                    remaining_percentiles.split_at_mut(g_end - prev_group);
+                percentile_slices.push((this_percentiles, prev_group));
+                remaining_percentiles = rest_percentiles;
+                prev_group = g_end;
+                prev_byte = byte_end;
+            }
 
-        let prefix_ref = &prefix;
-        let global_counts_ref = &global_counts;
-        let results: Vec<Vec<(usize, u32, u32, u32)>> = std::thread::scope(|scope| {
-            let handles: Vec<_> = thread_slices
-                .into_iter()
-                .map(|(slice, g_start, g_end, byte_offset)| {
-                    scope.spawn(move || {
-                        let mut local = Vec::new();
-                        for g in g_start..g_end {
-                            if global_counts_ref[g] == 0 {
-                                continue;
+            let prefix_ref = &prefix;
+            let global_counts_ref = &global_counts;
+            std::thread::scope(|scope| {
+                let handles: Vec<_> = thread_slices
+                    .into_iter()
+                    .zip(percentile_slices)
+                    .map(|((slice, g_start, g_end, byte_offset), (output, output_start))| {
+                        scope.spawn(move || {
+                            for g in g_start..g_end {
+                                if global_counts_ref[g] == 0 {
+                                    continue;
+                                }
+                                let s = prefix_ref[g] as usize - byte_offset;
+                                let e = prefix_ref[g + 1] as usize - byte_offset;
+                                output[g - output_start] = group_percentiles(&mut slice[s..e]);
                             }
-                            let s = prefix_ref[g] as usize - byte_offset;
-                            let e = prefix_ref[g + 1] as usize - byte_offset;
-                            let (p50, p95, p99) = group_percentiles(&mut slice[s..e]);
-                            local.push((g, p50, p95, p99));
-                        }
-                        local
+                        })
                     })
-                })
-                .collect();
+                    .collect();
             handles
                 .into_iter()
-                .map(|h| h.join().expect("percentile worker panicked"))
-                .collect()
-        });
-        for chunk in results {
-            for (g, p50, p95, p99) in chunk {
-                percentiles[g] = (p50, p95, p99);
-            }
-        }
+                .for_each(|h| h.join().expect("percentile worker panicked"));
+            });
     }
 
     std::fs::create_dir_all(out_dir).expect("create out dir");
