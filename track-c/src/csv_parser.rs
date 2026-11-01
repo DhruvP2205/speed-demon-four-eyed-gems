@@ -61,7 +61,7 @@ impl<'a> Iterator for CsvReader<'a> {
             }
         }
 
-        let mut fields: Record<'a> = Vec::new();
+        let mut fields: Record<'a> = Vec::with_capacity(5);
 
         loop {
             if pos < data.len() && data[pos] == b'"' {

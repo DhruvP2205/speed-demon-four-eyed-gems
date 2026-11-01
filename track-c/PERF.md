@@ -1,5 +1,7 @@
 # Track C: performance log
 
+| 3 | Hot-loop allocation reduction: `CsvReader::next()` now reserves the fixed five fields required by the Track C schema before parsing each record, avoiding repeated `Vec` capacity growth while preserving the existing RFC4180 parser and all field ownership behavior. Release tests: 26/26 passed; release build passed. Official hash/board measurement pending. | local | not measured | not measured | pending |
+
 Every step from the reference to your final version, each with the live-board run ID that measured it. Judges check that the run IDs exist and that each change moved the way you say it did.
 
 ## Pre-board development measurements
