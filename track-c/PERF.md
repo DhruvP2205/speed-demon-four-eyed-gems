@@ -1,6 +1,6 @@
 # Track C: performance log
 
-| 3 | Hot-loop allocation reduction: `CsvReader::next()` now reserves the fixed five fields required by the Track C schema before parsing each record, avoiding repeated `Vec` capacity growth while preserving the existing RFC4180 parser and all field ownership behavior. Release tests: 26/26 passed; release build passed. Official hash/board measurement pending. | local | not measured | not measured | pending |
+| 3 | Hot-loop allocation reduction: `CsvReader::next()` now reserves the fixed five fields required by the Track C schema before parsing each record, avoiding repeated `Vec` capacity growth while preserving the existing RFC4180 parser and all field ownership behavior. Release tests: 26/26 passed; official seed-1 and holdout verification passed in `41255127247`; full-scale hash matched in `41255127261`. CI measured wall T 1.2495 s, exec T 1.0939 s, M 261,382,144 bytes on its shared 2-core runner. Board confirmation is still required because CI memory was higher than the prior run and runner noise prevents attributing the large timing difference to this one-line change. | `41255127247`, `41255127261` | 1.2495 (CI, 2 cores) | 249.3 MiB (CI) | pending board |
 
 Every step from the reference to your final version, each with the live-board run ID that measured it. Judges check that the run IDs exist and that each change moved the way you say it did.
 
