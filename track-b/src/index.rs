@@ -51,13 +51,6 @@ struct ThreadPostings {
     /// (potentially tens of millions of) entries themselves until the
     /// O(n) scatter.
     presence_counts: Vec<u32>,
-    /// `(doc_id, start, end)`: each document's absolute byte range
-    /// `data[start..end]` for its tab-delimited text field (not
-    /// including the `doc_id\t` prefix). Pushed in increasing
-    /// `doc_id` order, same as `presence` -- `build_index` places
-    /// each entry directly by `doc_id` into the final flat table, no
-    /// comparison sort needed here either.
-    doc_offsets: Vec<(u32, u32, u32)>,
 }
 
 /// Scans every document in `ranges` (one thread per range), looking
@@ -77,7 +70,6 @@ fn scan_docs(
                 scope.spawn(move || {
                     let mut presence = Vec::new();
                     let mut presence_counts = vec![0u32; num_terms];
-                    let mut doc_offsets = Vec::new();
                     // Direct-indexed, not a HashMap: `term_id` is already
                     // a dense 0..num_terms integer, so tracking "the last
                     // doc_id this term was recorded for, in THIS thread"
@@ -101,7 +93,6 @@ fn scan_docs(
                             let doc_id = parse_doc_id(&line[..tab]);
                             let text_start = pos + tab + 1;
                             let text = &data[text_start..line_end];
-                            doc_offsets.push((doc_id, text_start as u32, line_end as u32));
 
                             for_each_token(text, &mut buf, |_position, token| {
                                 let Some(&term_id) = term_lookup.get(token) else {
@@ -119,7 +110,6 @@ fn scan_docs(
                     ThreadPostings {
                         presence,
                         presence_counts,
-                        doc_offsets,
                     }
                 })
             })
@@ -162,17 +152,18 @@ impl Index {
 /// term dictionary `query_parse.rs` already extracted.
 ///
 /// No comparison sort anywhere: each thread already pushes its own
-/// `presence`/`doc_offsets` entries in ascending `doc_id` order
+/// `presence` entries in ascending `doc_id` order
 /// (documents are scanned in file order within one thread's range),
 /// and `ranges` itself is in ascending doc-id order across threads --
 /// so concatenating thread 0's, then thread 1's, ... entries for a
 /// given term (or for the doc-id-indexed table) is ALREADY fully
 /// sorted. This turns the merge into a classic O(n) counting-sort
-/// scatter for `presence`, and a plain direct-index placement for
-/// `doc_offsets`: sum each thread's per-term counts into one global
-/// histogram, prefix-sum it into offsets, then copy each thread's
-/// entries (in thread order) into their term's slot, advancing a
-/// per-term cursor. An earlier version concatenated everything into
+/// scatter for `presence`. Document byte offsets are rebuilt in one
+/// cheap line pass over the mmap after the worker scan. Sum each
+/// thread's per-term counts into one global histogram, prefix-sum it
+/// into offsets, then copy each thread's entries (in thread order)
+/// into their term's slot, advancing a per-term cursor. An earlier
+/// version concatenated everything into
 /// one big `Vec` and called `sort_unstable` on ~47M entries at `full`
 /// scale -- measured costing 1.81s of a 2.67s total build, by far the
 /// dominant cost (see PERF.md); this scatter does the same job in a
@@ -202,17 +193,7 @@ pub fn build_index(
     }
     let total_presence = presence_offsets[num_terms] as usize;
 
-    // Exact size: one slot per document, computed from the highest
-    // doc_id actually seen (never assumes a literal dataset size).
-    let num_docs = threads
-        .iter()
-        .filter_map(|t| t.doc_offsets.last())
-        .map(|&(id, _, _)| id)
-        .max()
-        .map_or(0, |max_id| max_id as usize + 1);
-
     let mut presence_docs = vec![0u32; total_presence];
-    let mut doc_offsets = vec![(0u32, 0u32); num_docs];
     let mut presence_cursor = presence_offsets.clone();
 
     // Consumes `threads` (by value, not `&threads`): each `ThreadPostings`
@@ -228,9 +209,29 @@ pub fn build_index(
             presence_docs[pos] = doc_id;
             presence_cursor[term_id as usize] += 1;
         }
-        for (doc_id, start, end) in t.doc_offsets {
-            doc_offsets[doc_id as usize] = (start, end);
+    }
+
+    let mut doc_offsets = Vec::new();
+    let mut pos = 0;
+    while pos < data.len() {
+        let line_end = data[pos..]
+            .iter()
+            .position(|&b| b == b'\n')
+            .map(|i| pos + i)
+            .unwrap_or(data.len());
+        let line = &data[pos..line_end];
+        if !line.is_empty() {
+            let tab = line
+                .iter()
+                .position(|&b| b == b'\t')
+                .expect("doc line missing TAB");
+            let doc_id = parse_doc_id(&line[..tab]) as usize;
+            if doc_offsets.len() <= doc_id {
+                doc_offsets.resize(doc_id + 1, (0, 0));
+            }
+            doc_offsets[doc_id] = ((pos + tab + 1) as u32, line_end as u32);
         }
+        pos = line_end + 1;
     }
 
     let presence_offset_pairs: Vec<(u32, u32)> =

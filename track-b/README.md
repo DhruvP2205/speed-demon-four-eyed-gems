@@ -35,10 +35,10 @@ a legitimate strategy, not a shortcut:
    (see PERF.md) for a structure that only ever gets consulted for
    the small subset of documents a PHRASE query's PRESENCE
    intersection narrows down to. Also built in this pass, at no extra
-   scanning cost: `doc_offsets`, each document's absolute byte range
-   in the mmap'd corpus, an 8-byte-per-document table (~2 MB at
-   `full`) that step 4 uses to re-tokenize a PHRASE candidate
-   directly off the mapping, never from a stored copy.
+   scanning cost: presence counts. The small `doc_offsets` table is
+   rebuilt in one cheap line pass after indexing, rather than duplicated
+   in every scan worker; step 4 uses it to re-tokenize a PHRASE
+   candidate directly off the mapping, never from a stored copy.
 3. **Merge with a counting-sort scatter, not a comparison sort.** Each
    thread already pushes its own presence entries in ascending
    `doc_id` order (documents are scanned in file order within one
