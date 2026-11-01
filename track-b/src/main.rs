@@ -77,29 +77,24 @@ fn main() {
     let index_ref = &index;
     let queries_ref = &query_index.queries;
     let term_bytes_ref = &query_index.term_bytes;
-    let per_thread: Vec<(usize, Vec<Vec<u32>>)> = std::thread::scope(|scope| {
+    std::thread::scope(|scope| {
         let handles: Vec<_> = chunk_ranges
             .iter()
-            .map(|&(start, end)| {
-                scope.spawn(move || {
-                    let answers: Vec<Vec<u32>> = queries_ref[start..end]
-                        .iter()
-                        .map(|q| eval::eval(index_ref, docs_data, term_bytes_ref, q))
-                        .collect();
-                    (start, answers)
-                })
+            .scan(results.as_mut_slice(), |remaining, &(start, end)| {
+                let width = end - start;
+                let (slots, rest) = std::mem::take(remaining).split_at_mut(width);
+                *remaining = rest;
+                Some(scope.spawn(move || {
+                    for (slot, query) in slots.iter_mut().zip(&queries_ref[start..end]) {
+                        *slot = eval::eval(index_ref, docs_data, term_bytes_ref, query);
+                    }
+                }))
             })
             .collect();
         handles
             .into_iter()
-            .map(|h| h.join().expect("query worker panicked"))
-            .collect()
+            .for_each(|h| h.join().expect("query worker panicked"));
     });
-    for (start, answers) in per_thread {
-        for (i, answer) in answers.into_iter().enumerate() {
-            results[start + i] = answer;
-        }
-    }
 
     std::fs::create_dir_all(out_dir).expect("create out dir");
     let out_file =
