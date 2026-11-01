@@ -459,6 +459,14 @@ in the targets table.
   correctness but regressed Track B CI to 3.7788s while saving only about
   0.6 MB, so it was reverted in `5337c09`; the current best implementation
   remains the direct-result-write version above.
+- A fixed open-addressed Track B term table was tested in `ed5abf8`. It passed
+  correctness but regressed CI to 5.6428s with no meaningful memory gain, so
+  it was reverted in `21b1b9b`; the FNV-backed `HashMap` remains faster.
+- Track D commit `bda1527` replaced the 4-ary heap with a radix heap for
+  monotonic Dijkstra keys. Official verification `41274258324` and focused
+  workflow `41274258277` passed; CI measured 2.4379s wall, 2.2697s exec, and
+  118,094,507 bytes, versus 2.9121s / 111,261,013 bytes for the prior
+  direct-result-write version. It is kept pending board measurement.
 - Track D restored tree passed official verification `41252576250` and
   Track D CI `41252576253` (full-scale hash matched; 2-core CI wall 2.1280s,
   memory 111,282,859 bytes). Documentation-only follow-up is in `8c3f92a`.
