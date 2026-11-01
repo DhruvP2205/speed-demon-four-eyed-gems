@@ -20,18 +20,13 @@
 pub const MAX_TOKEN_LEN: usize = 32;
 
 #[inline]
-fn to_lower(b: u8) -> u8 {
-    if b.is_ascii_uppercase() {
-        b + 32
+fn lowered_token_byte(b: u8) -> Option<u8> {
+    let lower = if b.is_ascii_uppercase() { b + 32 } else { b };
+    if lower.is_ascii_lowercase() || lower.is_ascii_digit() {
+        Some(lower)
     } else {
-        b
+        None
     }
-}
-
-#[inline]
-fn is_token_byte(b: u8) -> bool {
-    let lower = to_lower(b);
-    lower.is_ascii_lowercase() || lower.is_ascii_digit()
 }
 
 /// Calls `f(position, lowered_token)` for every token in `text`, in
@@ -48,7 +43,7 @@ pub fn for_each_token(text: &[u8], buf: &mut [u8; MAX_TOKEN_LEN], mut f: impl Fn
     let n = text.len();
     let mut i = 0;
     while i < n {
-        if is_token_byte(text[i]) {
+        if lowered_token_byte(text[i]).is_some() {
             // Classify and lowercase in the SAME pass, writing straight
             // into `buf` as each byte is scanned -- an earlier version
             // scanned once to find the token's end, then copied+lowered
@@ -57,9 +52,12 @@ pub fn for_each_token(text: &[u8], buf: &mut [u8; MAX_TOKEN_LEN], mut f: impl Fn
             // position count must match the real token stream) but
             // stops writing once `buf` is full.
             let mut len = 0usize;
-            while i < n && is_token_byte(text[i]) {
+            while i < n {
+                let Some(lower) = lowered_token_byte(text[i]) else {
+                    break;
+                };
                 if len < MAX_TOKEN_LEN {
-                    buf[len] = to_lower(text[i]);
+                    buf[len] = lower;
                 }
                 len += 1;
                 i += 1;
