@@ -1,7 +1,5 @@
 # Track A: performance log
 
-| 6 | Replaced the default SipHash maps in the per-thread endpoint, hour, and packed-group hot path with a zero-dependency FNV-1a builder. The change preserves full-key collision checks and output semantics. All 14 release tests passed and the local full fixture hash matched the reference; local warm runs were 0.410-0.433 s. Awaiting official CI and board measurement. | local starter full | 0.410-0.433 (local) | pending | pending |
-
 | 5 | Percentile-output allocation reduction: percentile workers now write directly into disjoint slices of the final percentile table instead of allocating per-thread result vectors and merging them serially. Release tests: 14/14 passed; release build passed. Official seed-1 hash and all holdout jobs passed. | 41264778829 | 0.7076 wall / 0.5381 exec (shared 2-core CI runner) | 39.22 MB | kept pending board measurement |
 
 Every step from the reference to your final version, each with the live-board run ID that measured it. Judges check that the run IDs exist and that each change moved the way you say it did.

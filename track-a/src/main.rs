@@ -49,7 +49,6 @@
 
 mod chunked;
 mod format;
-mod fnv_hasher;
 mod mmap_file;
 mod parse;
 
@@ -59,7 +58,6 @@ use chunked::line_aligned_ranges;
 use format::{percentile_rank, write_group_line, GroupLine};
 use mmap_file::MappedFile;
 use parse::{hour_output_bytes, parse_u32};
-use fnv_hasher::FnvBuildHasher;
 
 const MAX_THREADS: usize = 12;
 const INPUT_NAME: &str = "requests.log";
@@ -79,11 +77,11 @@ struct GroupAgg {
 /// not a string -- hashing/comparing a `u32` is far cheaper per line
 /// than hashing/comparing a `(u32, [u8; 20])`.
 struct LocalState {
-    endpoint_ids: HashMap<Vec<u8>, u32, FnvBuildHasher>,
+    endpoint_ids: HashMap<Vec<u8>, u32>,
     endpoint_names: Vec<Vec<u8>>,
-    hour_ids: HashMap<[u8; 13], u32, FnvBuildHasher>,
+    hour_ids: HashMap<[u8; 13], u32>,
     hour_names: Vec<[u8; 13]>,
-    groups: HashMap<u32, GroupAgg, FnvBuildHasher>,
+    groups: HashMap<u32, GroupAgg>,
     /// `(local_group as u64) << 32 | latency`, one flat growing `Vec`
     /// per thread instead of one small `Vec` per group.
     latencies: Vec<u64>,
@@ -92,11 +90,11 @@ struct LocalState {
 impl LocalState {
     fn new() -> Self {
         LocalState {
-            endpoint_ids: HashMap::with_hasher(FnvBuildHasher::default()),
+            endpoint_ids: HashMap::new(),
             endpoint_names: Vec::new(),
-            hour_ids: HashMap::with_hasher(FnvBuildHasher::default()),
+            hour_ids: HashMap::new(),
             hour_names: Vec::new(),
-            groups: HashMap::with_hasher(FnvBuildHasher::default()),
+            groups: HashMap::new(),
             latencies: Vec::new(),
         }
     }
