@@ -4,8 +4,8 @@ Repo root, outside every `track-*/` folder on purpose -- this file does not
 count toward any track's S. Written for an agent with zero prior context on
 this session. Keep it accurate; update it at the end of every phase.
 
-Last updated: 2026-10-31, end of Phase 2 (Track A memory), about to start
-Phase 3 (Track D), by the agent executing the MISSION in the section
+Last updated: 2026-10-31, after Track C/Track D validation and a reverted
+Track B experiment, by the agent executing the MISSION in the section
 below.
 
 ## 0. The mission in force right now
@@ -367,12 +367,15 @@ in the targets table.
   shipped now (commit `5d85905`, CI run `41185182257`: wall 1.600s/exec
   1.435s/M 258.71MB).
 - **Known bottleneck / next steps** (per README "with another 24 hours",
-  not yet done): `CsvReader::next()` still allocates a fresh `Vec` per
-  record for its field list -- flagged as the next hot-loop allocation to
-  remove, and phase 1 (parsing) is now the second-largest phase after
-  phase 2.
-- **Phase 4 not started** (task #23, pending, conditional on Phases 1-3's
-  outcome).
+  the parser now reserves the schema's five fields per record
+  (`track-c/src/csv_parser.rs`), removing repeated capacity growth.
+  Official hash and holdout verification passed in `41255127247`, and the
+  full-scale Track C workflow `41255127261` passed with CI measurements of
+  1.2495s wall, 1.0939s exec, and 261,382,144 bytes memory. A board run is
+  still needed before treating this as a score win.
+- **Phase 4 not started** (conditional on Phases 1-3's outcome). The
+  available external Track C fixture uses an older contract and is not a
+  valid benchmark for this submission.
 
 ### Track D -- Traverse (`d_traverse`, `graph.txt`+`queries.txt` -> `distances.txt`)
 
@@ -421,6 +424,17 @@ in the targets table.
   `41252144661` and `41252144598`). The current known-correct implementation
   remains the 4-ary-heap version from `f6a186a`; no further Track D change is
   kept without an official hash gate and a board score.
+
+### Recent validation notes
+
+- Track B tokenizer fusion was attempted in `c974109`, passed correctness,
+  but regressed official CI wall time to 5.0294s (`41255656816`) versus the
+  prior ~3.84s baseline; it was reverted in `12b80f6`. The restored tree
+  passed Track B verification in `41256132427` and Track B CI in
+  `41256132483`.
+- Track D restored tree passed official verification `41252576250` and
+  Track D CI `41252576253` (full-scale hash matched; 2-core CI wall 2.1280s,
+  memory 111,282,859 bytes). Documentation-only follow-up is in `8c3f92a`.
 
 ### Line-count reconciliation note
 
