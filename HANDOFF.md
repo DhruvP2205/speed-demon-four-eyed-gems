@@ -467,6 +467,11 @@ in the targets table.
   workflow `41274258277` passed; CI measured 2.4379s wall, 2.2697s exec, and
   118,094,507 bytes, versus 2.9121s / 111,261,013 bytes for the prior
   direct-result-write version. It is kept pending board measurement.
+- Track D commit `543053b` removed only the heap's `cfg(test)` module. The
+  remaining 21 unit tests pass, official verification `41275238544` passed,
+  and `scc` code lines fell 1052 -> 981 (about +0.23 theoretical points).
+  Focused CI measured 2.0789s / 1.8823s / 116,649,984 bytes; treat its time
+  movement as noise because production code is unchanged.
 - Track D restored tree passed official verification `41252576250` and
   Track D CI `41252576253` (full-scale hash matched; 2-core CI wall 2.1280s,
   memory 111,282,859 bytes). Documentation-only follow-up is in `8c3f92a`.
