@@ -4,8 +4,8 @@ Repo root, outside every `track-*/` folder on purpose -- this file does not
 count toward any track's S. Written for an agent with zero prior context on
 this session. Keep it accurate; update it at the end of every phase.
 
-Last updated: 2026-10-31, after Track C/Track D validation and a reverted
-Track B experiment, by the agent executing the MISSION in the section
+Last updated: 2026-11-01, after Track A percentile-output validation,
+by the agent executing the MISSION in the section
 below.
 
 ## 0. The mission in force right now
@@ -253,6 +253,14 @@ in the targets table.
   mission's "keep going phase to phase" instruction. Still awaiting a
   board run to confirm the real M/points; relay the next board number and
   update the numbers above once in hand.
+- **Post-phase memory/lifetime optimization (commit `e041d79`, pushed)**:
+  percentile workers now write directly into their disjoint final output
+  slices instead of allocating per-thread result vectors and serially
+  merging them. Release tests passed; official seed-1 and all holdout
+  correctness jobs passed in verification run `41264778829`. The shared
+  2-core CI measurement was wall 0.7076 s, exec 0.5381 s, and 39.22 MB.
+  Keep pending the board's Track A score; Track C remains intentionally
+  skipped.
 
 ### Track B -- Index (`b_index`, `docs.txt`+`queries.txt` -> `results.txt`)
 
