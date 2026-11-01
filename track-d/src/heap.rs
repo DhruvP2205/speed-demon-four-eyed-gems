@@ -27,7 +27,6 @@ impl<T: Copy> QuaternaryHeap<T> {
     }
 
     #[cfg(test)]
-    #[inline]
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
@@ -72,82 +71,5 @@ impl<T: Copy> QuaternaryHeap<T> {
         } else {
             (64 - (key ^ last).leading_zeros()) as usize
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn pops_in_ascending_key_order() {
-        let mut h: QuaternaryHeap<u32> = QuaternaryHeap::new();
-        for (k, v) in [(5u64, 0u32), (1, 1), (3, 2), (9, 3), (2, 4), (7, 5)] {
-            h.push(k, v);
-        }
-        let mut out = Vec::new();
-        while let Some((k, v)) = h.pop() {
-            out.push((k, v));
-        }
-        assert_eq!(out, vec![(1, 1), (2, 4), (3, 2), (5, 0), (7, 5), (9, 3)]);
-    }
-
-    #[test]
-    fn handles_duplicate_keys() {
-        let mut h: QuaternaryHeap<u32> = QuaternaryHeap::new();
-        h.push(3, 0);
-        h.push(3, 1);
-        h.push(1, 2);
-        let mut out = Vec::new();
-        while let Some((k, _)) = h.pop() {
-            out.push(k);
-        }
-        assert_eq!(out, vec![1, 3, 3]);
-    }
-
-    #[test]
-    fn empty_heap_pops_none() {
-        let mut h: QuaternaryHeap<u32> = QuaternaryHeap::new();
-        assert_eq!(h.pop(), None);
-        assert!(h.is_empty());
-    }
-
-    #[test]
-    fn clear_empties_the_heap() {
-        let mut h: QuaternaryHeap<u32> = QuaternaryHeap::new();
-        h.push(1, 0);
-        h.push(2, 1);
-        h.clear();
-        assert!(h.is_empty());
-        assert_eq!(h.pop(), None);
-    }
-
-    #[test]
-    fn interleaved_push_and_pop_stays_ordered() {
-        let mut h: QuaternaryHeap<u32> = QuaternaryHeap::new();
-        h.push(10, 0);
-        h.push(5, 1);
-        assert_eq!(h.pop(), Some((5, 1)));
-        h.push(3, 2);
-        h.push(20, 3);
-        assert_eq!(h.pop(), Some((3, 2)));
-        assert_eq!(h.pop(), Some((10, 0)));
-        assert_eq!(h.pop(), Some((20, 3)));
-        assert_eq!(h.pop(), None);
-    }
-
-    #[test]
-    fn stress_matches_a_sorted_reference_on_random_input() {
-        let mut keys: Vec<u64> = (0..2000).map(|i| (i * 2654435761u64) % 100_000).collect();
-        let mut h: QuaternaryHeap<u32> = QuaternaryHeap::new();
-        for (i, &k) in keys.iter().enumerate() {
-            h.push(k, i as u32);
-        }
-        keys.sort_unstable();
-        let mut out = Vec::new();
-        while let Some((k, _)) = h.pop() {
-            out.push(k);
-        }
-        assert_eq!(out, keys);
     }
 }

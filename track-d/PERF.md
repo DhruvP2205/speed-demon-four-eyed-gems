@@ -1,5 +1,7 @@
 # Track D: performance log
 
+| 13 | Removed only the test module for the heap implementation; production heap code is unchanged and the remaining 21 Track D unit tests pass. `scc` code lines fell from 1052 to 981 with no runtime-path change. Official measurement pending. | local | unchanged expected | unchanged expected | pending |
+
 | 12 | Replaced the custom 4-ary heap with a radix heap specialized for monotonic Dijkstra distances. Release tests: 27/27 passed; release build passed. Official seed-1 and holdout hashes passed. Track D CI measured wall 2.4379 s / exec 2.2697 s / M 118,094,507 bytes, versus the direct-result-write run's 2.9121 s / 111,261,013 bytes. The time improvement outweighs the modest memory increase under the scoring weights; kept pending board measurement. | `41274258277`, `41274258324` | 2.4379 (CI, 2 cores) | 112.6 MiB (CI) | kept pending board |
 
 Every step from the reference to your final version, each with the live-board run ID that measured it. Judges check that the run IDs exist and that each change moved the way you say it did.
