@@ -44,7 +44,6 @@ struct ThreadPostings {
     /// Pushed in increasing `doc_id` order (documents are scanned in
     /// file order within a thread's range) -- `build_index`'s scatter
     /// step relies on this to avoid a comparison sort entirely.
-    presence: Vec<(u32, u32)>,
     /// Per-term counts, built alongside `presence` at no extra
     /// scanning cost -- lets `build_index` compute every term's
     /// global offset by summing counts, with no need to look at the
@@ -75,7 +74,6 @@ fn scan_docs(
             .iter()
             .map(|&(start, end)| {
                 scope.spawn(move || {
-                    let mut presence = Vec::new();
                     let mut presence_counts = vec![0u32; num_terms];
                     let mut doc_offsets = Vec::new();
                     // Direct-indexed, not a HashMap: `term_id` is already
@@ -108,7 +106,6 @@ fn scan_docs(
                                     return; // not a term any query needs -- discard immediately
                                 };
                                 if last_doc_for_term[term_id as usize] != doc_id {
-                                    presence.push((term_id, doc_id));
                                     presence_counts[term_id as usize] += 1;
                                     last_doc_for_term[term_id as usize] = doc_id;
                                 }
@@ -117,10 +114,10 @@ fn scan_docs(
                         pos = line_end + 1;
                     }
                     ThreadPostings {
-                        presence,
                         presence_counts,
                         doc_offsets,
                     }
+
                 })
             })
             .collect();
@@ -129,6 +126,54 @@ fn scan_docs(
             .map(|h| h.join().expect("doc scan worker panicked"))
             .collect()
     })
+}
+
+fn scatter_presence(
+    data: &[u8],
+    ranges: &[(usize, usize)],
+    term_lookup: &HashMap<&[u8], u32, FnvBuildHasher>,
+    starts: Vec<Vec<u32>>,
+    presence: &mut [u32],
+) {
+    let base = presence.as_mut_ptr() as usize;
+    let terms = term_lookup.len();
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = ranges
+            .iter()
+            .zip(starts)
+            .map(|(&(start, end), mut cursor)| {
+                scope.spawn(move || {
+                    let mut last_doc_for_term = vec![u32::MAX; terms];
+                    let mut buf = [0u8; crate::tokenize::MAX_TOKEN_LEN];
+                    let mut pos = start;
+                    while pos < end {
+                        let line_end = data[pos..end]
+                            .iter()
+                            .position(|&b| b == b'\n')
+                            .map(|i| pos + i)
+                            .unwrap_or(end);
+                        let line = &data[pos..line_end];
+                        if !line.is_empty() {
+                            let tab = line.iter().position(|&b| b == b'\t').expect("doc line missing TAB");
+                            let doc_id = parse_doc_id(&line[..tab]);
+                            let text = &data[pos + tab + 1..line_end];
+                            for_each_token(text, &mut buf, |_position, token| {
+                                let Some(&term_id) = term_lookup.get(token) else { return };
+                                let term = term_id as usize;
+                                if last_doc_for_term[term] != doc_id {
+                                    unsafe { (base as *mut u32).add(cursor[term] as usize).write(doc_id); }
+                                    cursor[term] += 1;
+                                    last_doc_for_term[term] = doc_id;
+                                }
+                            });
+                        }
+                        pos = line_end + 1;
+                    }
+                })
+            })
+            .collect();
+        handles.into_iter().for_each(|h| h.join().expect("scatter worker panicked"));
+    });
 }
 
 /// The final, queryable index: for each `term_id`, a sorted-ascending
@@ -213,25 +258,20 @@ pub fn build_index(
 
     let mut presence_docs = vec![0u32; total_presence];
     let mut doc_offsets = vec![(0u32, 0u32); num_docs];
+    let mut starts = Vec::with_capacity(threads.len());
     let mut presence_cursor = presence_offsets.clone();
-
-    // Consumes `threads` (by value, not `&threads`): each `ThreadPostings`
-    // -- including its own, separate copy of up to several hundred MB of
-    // `presence` entries at `full` scale -- is dropped as soon as ITS
-    // contribution is scattered, instead of all 12 staying alive for the
-    // whole loop alongside the final arrays they're being copied into.
-    // Measured cutting real cgroup `memory.peak` by roughly a third (see
-    // PERF.md).
-    for t in threads {
-        for (term_id, doc_id) in t.presence {
-            let pos = presence_cursor[term_id as usize] as usize;
-            presence_docs[pos] = doc_id;
-            presence_cursor[term_id as usize] += 1;
+    for t in &threads {
+        starts.push(presence_cursor.clone());
+        for term in 0..num_terms {
+            presence_cursor[term] += t.presence_counts[term];
         }
+    }
+    for t in threads {
         for (doc_id, start, end) in t.doc_offsets {
             doc_offsets[doc_id as usize] = (start, end);
         }
     }
+    scatter_presence(data, ranges, &term_lookup, starts, &mut presence_docs);
 
     let presence_offset_pairs: Vec<(u32, u32)> =
         presence_offsets.windows(2).map(|w| (w[0], w[1])).collect();

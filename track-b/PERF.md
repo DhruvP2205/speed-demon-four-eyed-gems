@@ -1,5 +1,7 @@
 # Track B: performance log
 
+| 15 | Replaced the per-thread posting vectors with a two-pass count/scatter build. The first pass records only per-term counts and document offsets; the second pass re-scans the mmap and writes each worker's disjoint term ranges directly into the final posting array. This removes the tens-of-millions-of-entry `(term, doc)` duplication while preserving sorted postings. All 28 release tests and five local template hashes passed; local full runs were 1.86-2.21 s. Awaiting official CI/board measurement. | local template | 1.86-2.21 (local) | lower expected | pending |
+
 | 14 | Reverted candidate `060b232` after the official Track B workflow. The tokenizer arithmetic and removal of worker-side document offsets passed all correctness gates and local template hashes, but official full-scale measurement regressed to wall 5.6244 s / exec 5.4614 s / 498,397,184 bytes versus the retained ~3.2249 s baseline. The regression outweighs the local-only improvement; source is restored to the board-winning shape in `90fa23a`. | `41276874963` | 5.6244 (CI) | 474.9 MiB | reverted |
 
 | 12 | Removed test-only modules from the formatter, chunk splitter, FNV hasher, and query parser. Production code is unchanged; 28 release tests and official hashes passed. The board scored commit `9752e92` at 41.361 points, up from 40.898, with 1.136 s / 500 MB / 898 lines. Keep this line-count reduction based on the authoritative board result despite noisy shared-run CI. | board `9752e92` | 1.136 (board) | 500 MB (board) | kept |
