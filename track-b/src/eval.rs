@@ -105,42 +105,42 @@ fn eval_phrase(index: &Index, data: &[u8], terms: &[u32], term_bytes: &[Vec<u8>]
 
     let k = terms.len();
     let mut buf = [0u8; MAX_TOKEN_LEN];
-    let mut window = vec![(0u32, [0u8; MAX_TOKEN_LEN], 0u8); k];
+    // One allocation, reused (via `clear`, which keeps capacity)
+    // across every candidate document -- never per token, never per
+    // query. `position` is kept alongside each token's bytes because
+    // a token longer than `MAX_TOKEN_LEN` is skipped by `for_each_token`
+    // but still consumes a position: without the real position number,
+    // two tokens either side of a skipped one would look falsely
+    // adjacent.
+    let mut doc_tokens: Vec<(u32, [u8; MAX_TOKEN_LEN], u8)> = Vec::new();
     let mut matches = Vec::new();
 
     for &doc_id in &candidates {
         let text = index.doc_text(data, doc_id);
-        let mut seen = 0usize;
-        let mut write = 0usize;
-        let mut found = false;
+        doc_tokens.clear();
         for_each_token(text, &mut buf, |position, token| {
             let mut stored = [0u8; MAX_TOKEN_LEN];
             stored[..token.len()].copy_from_slice(token);
-            window[write] = (position, stored, token.len() as u8);
-            write = (write + 1) % k;
-            seen = seen.saturating_add(1);
-            if seen >= k {
-                let start = write;
-                let (start_pos, first_bytes, first_len) = window[start];
-                if first_bytes[..first_len as usize] == *term_bytes[terms[0] as usize] {
-                    let mut matches_window = true;
-                    for (t, term) in terms.iter().enumerate().skip(1) {
-                        let (pos, bytes, len) = window[(start + t) % k];
-                        if pos != start_pos + t as u32
-                            || bytes[..len as usize] != *term_bytes[*term as usize]
-                        {
-                            matches_window = false;
-                            break;
-                        }
-                    }
-                    if matches_window {
-                        found = true;
-                    }
+            doc_tokens.push((position, stored, token.len() as u8));
+        });
+
+        'windows: for w in 0..doc_tokens.len() {
+            let (start_pos, first_bytes, first_len) = doc_tokens[w];
+            if first_bytes[..first_len as usize] != *term_bytes[terms[0] as usize] {
+                continue;
+            }
+            if w + k > doc_tokens.len() {
+                break;
+            }
+            for (t, term) in terms.iter().enumerate().skip(1) {
+                let (pos, bytes, len) = doc_tokens[w + t];
+                if pos != start_pos + t as u32 || bytes[..len as usize] != *term_bytes[*term as usize]
+                {
+                    continue 'windows;
                 }
             }
-        });
-        if found {
             matches.push(doc_id);
+            break;
         }
     }
     matches
