@@ -33,7 +33,6 @@ mod reorder;
 mod workspace;
 
 use std::io::{BufWriter, Write};
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use csr::{build_forward_and_in_edge, Csr};
 use mmap_file::MappedFile;
@@ -137,35 +136,29 @@ fn main() {
 
     let mut results: Vec<Option<u64>> = vec![None; queries.len()];
     let thread_count = MAX_THREADS.min(queries.len().max(1));
-    let next_query = AtomicUsize::new(0);
-    let results_ptr = results.as_mut_ptr() as usize;
+    let chunk_ranges = even_chunks(queries.len(), thread_count);
 
     std::thread::scope(|scope| {
         let csr_ref = &csr;
         let has_in_edge_ref = &has_in_edge;
         let queries_ref = &queries;
-        let next_query_ref = &next_query;
-        let handles: Vec<_> = (0..thread_count)
-            .map(|_| {
-                scope.spawn(move || {
+        let results_ref = &mut results;
+        let handles: Vec<_> = chunk_ranges
+            .iter()
+            .scan(results_ref.as_mut_slice(), |remaining, &(start, end)| {
+                let (slots, rest) = std::mem::take(remaining).split_at_mut(end - start);
+                *remaining = rest;
+                Some(scope.spawn(move || {
                     let mut ws = Workspace::new(n);
-                    loop {
-                        let index = next_query_ref.fetch_add(1, Ordering::Relaxed);
-                        if index >= queries_ref.len() {
-                            break;
-                        }
-                        let (s, t) = queries_ref[index];
+                    for (slot, &(s, t)) in slots.iter_mut().zip(&queries_ref[start..end]) {
                         let answer = if t != s && !has_in_edge_ref[t as usize] {
                             None // O(1): no edge points at t, so s != t can never reach it
                         } else {
                             shortest_path(csr_ref, s, t, &mut ws)
                         };
-                        // Each index is claimed once from `next_query`.
-                        unsafe {
-                            (results_ptr as *mut Option<u64>).add(index).write(answer);
-                        }
+                        *slot = answer;
                     }
-                })
+                }))
             })
             .collect();
         handles
@@ -181,5 +174,17 @@ fn main() {
             Some(d) => writeln!(writer, "{d}").expect("write output line"),
             None => writeln!(writer, "-1").expect("write output line"),
         }
+    }
+
+    /// Splits `0..total` into up to `n` contiguous, roughly-equal ranges.
+    fn even_chunks(total: usize, n: usize) -> Vec<(usize, usize)> {
+        if total == 0 || n == 0 {
+            return Vec::new();
+        }
+        let n = n.min(total).max(1);
+        (0..n)
+            .map(|i| (total * i / n, total * (i + 1) / n))
+            .filter(|&(s, e)| e > s)
+            .collect()
     }
 }

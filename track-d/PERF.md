@@ -1,6 +1,6 @@
 # Track D: performance log
 
-| 16 | Replaced static query chunks with a shared atomic work queue so uneven shortest-path costs cannot leave workers idle. Results remain indexed by query; each index is claimed exactly once. Release tests: 21/21 passed; full-fixture `distances.txt` SHA-256 matched the template output. Local Windows timing was noisy (1.88-2.16 s across four runs), so the candidate requires the official board before judging. | pending | pending | pending | pending |
+| 16 | Reverted candidate `8ea883d`: a shared atomic work queue for query scheduling passed all correctness gates but regressed the official 2-core benchmark to 2.4673 s wall / 2.2841 s exec versus the retained 2.0789 s / 1.8823 s baseline. Static equal chunks are faster on this workload despite potential theoretical imbalance. | `41281552568` | 2.4673 (CI) | pending | reverted |
 
 | 15 | Reverted candidate `ad5b2de` after official Track D measurement. Reusing radix-heap bucket capacity passed correctness but regressed official full-scale wall time to 2.1897 s / exec 2.0328 s and memory to 118,319,787 bytes versus the retained 2.0789 s / 116,649,984-byte baseline. The local Windows speedup did not transfer to the Linux runner. | `41277374502` | 2.1897 (CI) | 112.8 MiB | reverted |
 
