@@ -1,5 +1,7 @@
 # Track D: performance log
 
+| 16 | Replaced static query chunks with a shared atomic work queue so uneven shortest-path costs cannot leave workers idle. Results remain indexed by query; each index is claimed exactly once. Release tests: 21/21 passed; full-fixture `distances.txt` SHA-256 matched the template output. Local Windows timing was noisy (1.88-2.16 s across four runs), so the candidate requires the official board before judging. | pending | pending | pending | pending |
+
 | 15 | Reverted candidate `ad5b2de` after official Track D measurement. Reusing radix-heap bucket capacity passed correctness but regressed official full-scale wall time to 2.1897 s / exec 2.0328 s and memory to 118,319,787 bytes versus the retained 2.0789 s / 116,649,984-byte baseline. The local Windows speedup did not transfer to the Linux runner. | `41277374502` | 2.1897 (CI) | 112.8 MiB | reverted |
 
 | 13 | Removed only the test module for the heap implementation; production heap code is unchanged and the remaining 21 Track D unit tests pass. `scc` code lines fell from 1052 to 981. Official seed-1 and holdout hashes passed. Track D CI measured wall 2.0789 s / exec 1.8823 s / M 116,649,984 bytes; the runtime change is treated as runner noise because this cleanup is `cfg(test)`-only. The line-axis gain is about +0.23 points if board runtime is unchanged. | `41275238450`, `41275238544` | 2.0789 (CI, 2 cores) | 111.2 MiB (CI) | kept pending board |
