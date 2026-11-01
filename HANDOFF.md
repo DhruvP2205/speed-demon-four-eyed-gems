@@ -432,6 +432,11 @@ in the targets table.
   prior ~3.84s baseline; it was reverted in `12b80f6`. The restored tree
   passed Track B verification in `41256132427` and Track B CI in
   `41256132483`.
+- A second Track B experiment in `085a62b` used
+  `available_parallelism()` to avoid 12-worker oversubscription on CI. It
+  reduced CI memory to 485,983,573 bytes but worsened wall time to 5.3816s
+  (`41256786776`), so it was reverted in `41a63c7`. The restored tree passed
+  verification `41257254868` and Track B CI `41257254870`.
 - Track D restored tree passed official verification `41252576250` and
   Track D CI `41252576253` (full-scale hash matched; 2-core CI wall 2.1280s,
   memory 111,282,859 bytes). Documentation-only follow-up is in `8c3f92a`.
