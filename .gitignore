@@ -8,3 +8,5 @@ massif_report.txt
 bench_out/
 bench_output.txt
 check_output.txt
+.claude/
+HANDOFF.md
