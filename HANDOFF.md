@@ -437,6 +437,12 @@ in the targets table.
   reduced CI memory to 485,983,573 bytes but worsened wall time to 5.3816s
   (`41256786776`), so it was reverted in `41a63c7`. The restored tree passed
   verification `41257254868` and Track B CI `41257254870`.
+- Track B query workers now write directly into disjoint slices of the final
+  results table instead of collecting private answer vectors and copying
+  them serially. Commit `6c146f9` passed official verification
+  `41258093523` and Track B CI `41258093585`: wall 3.2249s, exec 3.0716s,
+  memory 498,372,608 bytes on the 2-core runner. This is the current best
+  Track B implementation; board confirmation remains authoritative.
 - Track D restored tree passed official verification `41252576250` and
   Track D CI `41252576253` (full-scale hash matched; 2-core CI wall 2.1280s,
   memory 111,282,859 bytes). Documentation-only follow-up is in `8c3f92a`.
