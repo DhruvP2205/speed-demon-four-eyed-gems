@@ -1,7 +1,5 @@
 # Track B: performance log
 
-| 6 | Fused tokenizer classification and ASCII lowercasing: `lowered_token_byte` now returns the already-lowered token byte, removing the second lowercase/classification pass for every token byte while preserving separator, non-ASCII, and overlength-token semantics. Release tests: 43/43 passed; release build passed. Official hash/board measurement pending. | local | not measured | not measured | pending |
-
 Every step from the reference to your final version, each with the live-board run ID that measured it. Judges check that the run IDs exist and that each change moved the way you say it did.
 
 ## Pre-board development measurements
