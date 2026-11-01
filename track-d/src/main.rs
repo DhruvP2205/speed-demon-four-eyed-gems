@@ -33,7 +33,6 @@ mod reorder;
 mod workspace;
 
 use std::io::{BufWriter, Write};
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use csr::{build_forward_and_in_edge, Csr};
 use mmap_file::MappedFile;
@@ -137,46 +136,35 @@ fn main() {
 
     let mut results: Vec<Option<u64>> = vec![None; queries.len()];
     let thread_count = MAX_THREADS.min(queries.len().max(1));
-    let next_query = AtomicUsize::new(0);
+    let chunk_ranges = even_chunks(queries.len(), thread_count);
 
-    let per_thread: Vec<Vec<(usize, Option<u64>)>> = std::thread::scope(|scope| {
+    std::thread::scope(|scope| {
         let csr_ref = &csr;
         let has_in_edge_ref = &has_in_edge;
-        let next_query_ref = &next_query;
         let queries_ref = &queries;
-        let total_queries = queries.len();
-        let handles: Vec<_> = (0..thread_count)
-            .map(|_| {
-                scope.spawn(move || {
+        let results_ref = &mut results;
+        let handles: Vec<_> = chunk_ranges
+            .iter()
+            .scan(results_ref.as_mut_slice(), |remaining, &(start, end)| {
+                let (slots, rest) = std::mem::take(remaining).split_at_mut(end - start);
+                *remaining = rest;
+                Some(scope.spawn(move || {
                     let mut ws = Workspace::new(n);
-                    let mut local: Vec<(usize, Option<u64>)> = Vec::new();
-                    loop {
-                        let i = next_query_ref.fetch_add(1, Ordering::Relaxed);
-                        if i >= total_queries {
-                            break;
-                        }
-                        let (s, t) = queries_ref[i];
+                    for (slot, &(s, t)) in slots.iter_mut().zip(&queries_ref[start..end]) {
                         let answer = if t != s && !has_in_edge_ref[t as usize] {
                             None // O(1): no edge points at t, so s != t can never reach it
                         } else {
                             shortest_path(csr_ref, s, t, &mut ws)
                         };
-                        local.push((i, answer));
+                        *slot = answer;
                     }
-                    local
-                })
+                }))
             })
             .collect();
         handles
             .into_iter()
-            .map(|h| h.join().expect("worker thread panicked"))
-            .collect()
+            .for_each(|h| h.join().expect("query worker panicked"));
     });
-    for local in per_thread {
-        for (i, answer) in local {
-            results[i] = answer;
-        }
-    }
     std::fs::create_dir_all(out_dir).expect("create out dir");
     let out_file =
         std::fs::File::create(format!("{out_dir}/{OUTPUT_FILE}")).expect("create output");
@@ -187,4 +175,16 @@ fn main() {
             None => writeln!(writer, "-1").expect("write output line"),
         }
     }
+}
+
+/// Splits `0..total` into up to `n` contiguous, roughly-equal ranges.
+fn even_chunks(total: usize, n: usize) -> Vec<(usize, usize)> {
+    if total == 0 || n == 0 {
+        return Vec::new();
+    }
+    let n = n.min(total).max(1);
+    (0..n)
+        .map(|i| (total * i / n, total * (i + 1) / n))
+        .filter(|&(s, e)| e > s)
+        .collect()
 }
