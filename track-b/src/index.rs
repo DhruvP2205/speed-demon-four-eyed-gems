@@ -22,59 +22,10 @@
 //! from the mapping (`eval.rs`) -- bounded to candidates, never a
 //! stored copy of any document's text.
 
+use std::collections::HashMap;
+
+use crate::fnv_hasher::FnvBuildHasher;
 use crate::tokenize::for_each_token;
-
-const EMPTY_TERM: u32 = u32::MAX;
-
-struct TermLookup<'a> {
-    terms: &'a [Vec<u8>],
-    slots: Vec<u32>,
-    mask: usize,
-}
-
-impl<'a> TermLookup<'a> {
-    fn new(terms: &'a [Vec<u8>]) -> Self {
-        let capacity = (terms.len().max(1) * 2).next_power_of_two();
-        let mut lookup = Self {
-            terms,
-            slots: vec![EMPTY_TERM; capacity],
-            mask: capacity - 1,
-        };
-        for (id, term) in terms.iter().enumerate() {
-            let mut slot = hash_term(term) as usize & lookup.mask;
-            while lookup.slots[slot] != EMPTY_TERM {
-                slot = (slot + 1) & lookup.mask;
-            }
-            lookup.slots[slot] = id as u32;
-        }
-        lookup
-    }
-
-    #[inline]
-    fn get(&self, token: &[u8]) -> Option<u32> {
-        let mut slot = hash_term(token) as usize & self.mask;
-        loop {
-            let id = self.slots[slot];
-            if id == EMPTY_TERM {
-                return None;
-            }
-            if self.terms[id as usize].as_slice() == token {
-                return Some(id);
-            }
-            slot = (slot + 1) & self.mask;
-        }
-    }
-}
-
-#[inline]
-fn hash_term(bytes: &[u8]) -> u64 {
-    let mut hash = 0xcbf29ce484222325u64;
-    for &byte in bytes {
-        hash ^= byte as u64;
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    hash
-}
 
 #[inline]
 fn parse_doc_id(bytes: &[u8]) -> u32 {
@@ -116,9 +67,9 @@ struct ThreadPostings {
 fn scan_docs(
     data: &[u8],
     ranges: &[(usize, usize)],
-    term_lookup: &TermLookup<'_>,
+    term_lookup: &HashMap<&[u8], u32, FnvBuildHasher>,
 ) -> Vec<ThreadPostings> {
-    let num_terms = term_lookup.terms.len();
+    let num_terms = term_lookup.len();
     std::thread::scope(|scope| {
         let handles: Vec<_> = ranges
             .iter()
@@ -153,7 +104,7 @@ fn scan_docs(
                             doc_offsets.push((doc_id, text_start as u32, line_end as u32));
 
                             for_each_token(text, &mut buf, |_position, token| {
-                                let Some(term_id) = term_lookup.get(token) else {
+                                let Some(&term_id) = term_lookup.get(token) else {
                                     return; // not a term any query needs -- discard immediately
                                 };
                                 if last_doc_for_term[term_id as usize] != doc_id {
@@ -232,7 +183,11 @@ pub fn build_index(
     term_bytes: &[Vec<u8>],
 ) -> Index {
     let num_terms = term_bytes.len();
-    let term_lookup = TermLookup::new(term_bytes);
+    let term_lookup: HashMap<&[u8], u32, FnvBuildHasher> = term_bytes
+        .iter()
+        .enumerate()
+        .map(|(id, bytes)| (bytes.as_slice(), id as u32))
+        .collect();
 
     let threads = scan_docs(data, ranges, &term_lookup);
 

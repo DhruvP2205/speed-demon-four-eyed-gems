@@ -1,7 +1,5 @@
 # Track B: performance log
 
-| 11 | Replaced the generic FNV-backed `HashMap` term lookup in the 36M-token document scan with a fixed open-addressed table over the query terms. Collisions still compare the complete token bytes, so lookup semantics are unchanged. Release tests: 43/43 passed; release build passed. Official measurement pending. | local | not measured | not measured | pending |
-
 | 10 | Tried replacing each phrase candidate's full token vector with a bounded circular window of only `k` tokens. All 43 release tests and official hashes passed, but the authoritative Track B workflow measured wall T 3.7788 s / exec T 3.6285 s / M 497,786,880 bytes, versus the kept 3.2249 s / 498,372,608 bytes baseline. The small memory reduction did not offset the 17% time regression, so the change was reverted in `5337c09`. | `41265664364`, `41265664343` | 3.7788 (CI, 2 cores) | 474.4 MiB (CI) | reverted |
 
 | 9 | Tried setting `MALLOC_ARENA_MAX=1` in the pinned production image to reduce glibc arena duplication. Official correctness passed (`41258586715`), but rerun Track B CI `41258586079` measured wall T 5.7030 s, exec T 5.5409 s, and M 498,469,547 bytes. Memory was unchanged while time regressed sharply, so the image-only experiment was reverted in `9e205b3`. The first run failed only because CI `valgrind` installation timed out; rerunning produced the authoritative measurements. | `41258586079`, `41258586715` | 5.7030 (CI, 2 cores) | 475.2 MiB (CI) | reverted |
