@@ -31,3 +31,50 @@ pub fn line_aligned_ranges(data: &[u8], n: usize) -> Vec<(usize, usize)> {
         .map(|w| (w[0], w[1]))
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn line_count(data: &[u8]) -> usize {
+        data.split(|&b| b == b'\n')
+            .filter(|l| !l.is_empty())
+            .count()
+    }
+
+    fn reconstruct_line_count(data: &[u8], n: usize) -> usize {
+        line_aligned_ranges(data, n)
+            .iter()
+            .map(|&(s, e)| line_count(&data[s..e]))
+            .sum()
+    }
+
+    #[test]
+    fn splitting_never_changes_the_total_line_count() {
+        let data = b"0\tthe quick fox\n".repeat(1000);
+        let baseline = line_count(&data);
+        for n in [1, 2, 3, 7, 12] {
+            assert_eq!(reconstruct_line_count(&data, n), baseline, "n={n}");
+        }
+    }
+
+    #[test]
+    fn ranges_cover_the_whole_buffer_with_no_gap_or_overlap() {
+        let data = b"0\tsome text\n".repeat(500);
+        for n in [1, 2, 3, 7, 12] {
+            let ranges = line_aligned_ranges(&data, n);
+            let mut expected_start = 0;
+            for &(start, end) in &ranges {
+                assert_eq!(start, expected_start, "n={n}");
+                assert!(end > start, "n={n}");
+                expected_start = end;
+            }
+            assert_eq!(expected_start, data.len(), "n={n}");
+        }
+    }
+
+    #[test]
+    fn empty_buffer_produces_no_ranges() {
+        assert_eq!(line_aligned_ranges(b"", 12), Vec::new());
+    }
+}
