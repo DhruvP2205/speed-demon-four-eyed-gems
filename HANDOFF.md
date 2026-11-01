@@ -430,8 +430,12 @@ in the targets table.
 - **Phase 3 status**: attempted; an adaptive bidirectional/ALT port was
   reverted after official full-scale hash mismatch (CI runs
   `41252144661` and `41252144598`). The current known-correct implementation
-  remains the 4-ary-heap version from `f6a186a`; no further Track D change is
-  kept without an official hash gate and a board score.
+  remains the 4-ary-heap version from `f6a186a`. A focused post-phase
+  optimization (`dd4d718`) now writes query answers directly into disjoint
+  result slices, removing per-thread result vectors and the serial merge.
+  Release tests passed; official seed-1 and holdout verification passed in
+  `41265246669`, and the focused workflow `41265246661` measured 2.9121 s
+  wall, 2.7411 s exec, and 111,261,013 bytes on the shared 2-core runner.
 
 ### Recent validation notes
 
