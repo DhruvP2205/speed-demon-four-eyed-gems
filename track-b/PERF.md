@@ -1,5 +1,7 @@
 # Track B: performance log
 
+| 7 | Core-aware fan-out: derive the worker count from `available_parallelism()`, capped at the existing 12-thread maximum, and use it for both document indexing and query evaluation. This avoids launching 12 workers on a 2-core CI/benchmark runner while preserving the 12-worker board path. Release tests/build and official hash validation pending. | local | not measured | not measured | pending |
+
 | 6 | Tried fusing tokenizer classification and ASCII lowercasing into one helper. Official hash and all 43 release tests passed, but Track B workflow `41255656816` measured wall T 5.0294 s, exec T 4.8691 s, M 499,666,944 bytes versus the prior CI baseline of about 3.84 s and 499.73 MB. The change was reverted immediately in `12b80f6`; it was a correctness-preserving performance regression, likely due to worse optimizer/code generation for the `Option<u8>` path. | `41255656816` | 5.0294 (CI, 2 cores) | 476.3 MiB (CI) | reverted |
 
 Every step from the reference to your final version, each with the live-board run ID that measured it. Judges check that the run IDs exist and that each change moved the way you say it did.
