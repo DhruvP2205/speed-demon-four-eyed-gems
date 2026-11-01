@@ -455,6 +455,11 @@ in the targets table.
   `41258093523` and Track B CI `41258093585`: wall 3.2249s, exec 3.0716s,
   memory 498,372,608 bytes on the 2-core runner. This is the current best
   Track B implementation; board confirmation remains authoritative.
+- Track B test-only line trimming was tried in `9752e92`: it reduced
+  `scc` code 1053 -> 882 and passed 28 remaining tests plus official hashes,
+  but CI measured 5.4995s versus the kept ~3.2249s baseline. It was reverted
+  in `7891898`; no line-only change is kept when the authoritative timing
+  moves that far in the wrong direction.
 - A bounded circular phrase-token window was tested in `a30ca52`. It passed
   correctness but regressed Track B CI to 3.7788s while saving only about
   0.6 MB, so it was reverted in `5337c09`; the current best implementation
