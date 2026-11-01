@@ -455,6 +455,10 @@ in the targets table.
   `41258093523` and Track B CI `41258093585`: wall 3.2249s, exec 3.0716s,
   memory 498,372,608 bytes on the 2-core runner. This is the current best
   Track B implementation; board confirmation remains authoritative.
+- A bounded circular phrase-token window was tested in `a30ca52`. It passed
+  correctness but regressed Track B CI to 3.7788s while saving only about
+  0.6 MB, so it was reverted in `5337c09`; the current best implementation
+  remains the direct-result-write version above.
 - Track D restored tree passed official verification `41252576250` and
   Track D CI `41252576253` (full-scale hash matched; 2-core CI wall 2.1280s,
   memory 111,282,859 bytes). Documentation-only follow-up is in `8c3f92a`.
