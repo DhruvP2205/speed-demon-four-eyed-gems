@@ -137,33 +137,16 @@ fn scan_docs(
 /// plus each document's absolute byte range in the mmap'd corpus
 /// (`doc_offsets`, for PHRASE's re-tokenize-the-candidate check).
 pub struct Index {
-    presence: Vec<u8>,
+    presence: Vec<u32>,
     presence_offsets: Vec<(u32, u32)>,
     doc_offsets: Vec<(u32, u32)>,
 }
 
 impl Index {
     #[inline]
-    pub fn presence_of(&self, term_id: u32) -> Vec<u32> {
+    pub fn presence_of(&self, term_id: u32) -> &[u32] {
         let (start, end) = self.presence_offsets[term_id as usize];
-        let bytes = &self.presence[start as usize..end as usize];
-        let mut out = Vec::new();
-        let mut previous = 0u32;
-        let mut value = 0u32;
-        let mut shift = 0;
-        for &byte in bytes {
-            value |= ((byte & 0x7f) as u32) << shift;
-            if byte & 0x80 == 0 {
-                previous += value;
-                out.push(previous);
-                shift = 0;
-                value = 0;
-            } else {
-                shift += 7;
-            }
-        }
-        debug_assert_eq!(shift, 0);
-        out
+        &self.presence[start as usize..end as usize]
     }
 
     /// The raw text bytes (after the `doc_id\t` prefix) of `doc_id`,
@@ -246,52 +229,12 @@ pub fn build_index(data: &[u8], ranges: &[(usize, usize)], term_bytes: &[Vec<u8>
         }
     }
 
-    let mut byte_offsets = vec![0u32; num_terms + 1];
-    for term in 0..num_terms {
-        let mut previous = 0u32;
-        for &doc_id in
-            &presence_docs[presence_offsets[term] as usize..presence_offsets[term + 1] as usize]
-        {
-            let mut delta = doc_id - previous;
-            loop {
-                byte_offsets[term + 1] += 1;
-                if delta < 128 {
-                    break;
-                }
-                delta >>= 7;
-            }
-            previous = doc_id;
-        }
-        byte_offsets[term + 1] += byte_offsets[term];
-    }
-
-    let mut compressed_presence = vec![0u8; byte_offsets[num_terms] as usize];
-    for term in 0..num_terms {
-        let mut previous = 0u32;
-        let mut pos = byte_offsets[term] as usize;
-        for &doc_id in
-            &presence_docs[presence_offsets[term] as usize..presence_offsets[term + 1] as usize]
-        {
-            let mut delta = doc_id - previous;
-            loop {
-                let mut byte = (delta & 0x7f) as u8;
-                delta >>= 7;
-                if delta != 0 {
-                    byte |= 0x80;
-                }
-                compressed_presence[pos] = byte;
-                pos += 1;
-                if delta == 0 {
-                    break;
-                }
-            }
-            previous = doc_id;
-        }
-    }
+    let presence_offset_pairs: Vec<(u32, u32)> =
+        presence_offsets.windows(2).map(|w| (w[0], w[1])).collect();
 
     Index {
-        presence: compressed_presence,
-        presence_offsets: byte_offsets.windows(2).map(|w| (w[0], w[1])).collect(),
+        presence: presence_docs,
+        presence_offsets: presence_offset_pairs,
         doc_offsets,
     }
 }

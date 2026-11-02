@@ -1,6 +1,6 @@
 # Track B: performance log
 
-| 17 | Candidate: delta-varint encode sorted presence postings instead of storing raw `u32` document IDs. Decoding is exact and preserves sorted-list semantics; phrase verification remains mmap-backed. Release tests and official benchmark pending. | pending | pending | pending | pending |
+| 17 | Reverted candidate `050d395`: delta-varint presence postings passed the official hash and reduced cgroup memory from about 498 MB to 454.4 MB, but decoding every posting list regressed the official full-scale benchmark to 12.9617 s wall / 12.7996 s exec versus the retained ~3.2249 s baseline. The 4x time penalty dominates the memory gain. | `41395028601` | 12.9617 (CI) | 454.4 MB | reverted |
 
 | 16 | Reverted two-pass direct posting scatter candidate `318f3de`. It passed official seed/holdout correctness, but the official full-scale benchmark regressed to wall 7.2470 s / exec 7.0752 s / 500,918,955 bytes versus the retained baseline near 3.2249 s / 498,372,608 bytes. The second full corpus scan costs more than the temporary posting-vector memory saved on the official 2-core runner. Restored in `49dcbfb`. | `41277990492` | 7.2470 (CI) | 477.5 MiB | reverted |
 

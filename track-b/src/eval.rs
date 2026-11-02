@@ -69,13 +69,13 @@ fn not(a: &[u32], b: &[u32]) -> Vec<u32> {
 }
 
 fn eval_bool(index: &Index, terms: &[u32], ops: &[Op]) -> Vec<u32> {
-    let mut result = index.presence_of(terms[0]);
+    let mut result = index.presence_of(terms[0]).to_vec();
     for (op, &term) in ops.iter().zip(&terms[1..]) {
         let postings = index.presence_of(term);
         result = match op {
-            Op::And => and(&result, &postings),
-            Op::Or => or(&result, &postings),
-            Op::Not => not(&result, &postings),
+            Op::And => and(&result, postings),
+            Op::Or => or(&result, postings),
+            Op::Not => not(&result, postings),
         };
     }
     result
@@ -95,13 +95,12 @@ fn eval_phrase(index: &Index, data: &[u8], terms: &[u32], term_bytes: &[Vec<u8>]
     let mut term_order: Vec<usize> = (0..terms.len()).collect();
     term_order.sort_by_key(|&i| index.presence_of(terms[i]).len());
 
-    let mut candidates = index.presence_of(terms[term_order[0]]);
+    let mut candidates = index.presence_of(terms[term_order[0]]).to_vec();
     for &i in &term_order[1..] {
         if candidates.is_empty() {
             return candidates;
         }
-        let postings = index.presence_of(terms[i]);
-        candidates = and(&candidates, &postings);
+        candidates = and(&candidates, index.presence_of(terms[i]));
     }
 
     let k = terms.len();
