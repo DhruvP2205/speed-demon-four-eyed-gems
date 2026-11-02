@@ -1,5 +1,7 @@
 # Track D: performance log
 
+| 18 | Candidate: store the 65 radix-heap buckets in a fixed array instead of an outer `Vec`. This removes one outer allocation per query worker while preserving each bucket's individual allocation and all heap operations. Release tests and official benchmark pending. | pending | pending | pending | pending |
+
 | 17 | Reverted candidate `f8f1df4`: sizing parsing and query workers to the runtime's 2 available CPUs passed correctness but regressed the live board to 0.638901 s / 117.1 MB / 49.991 points versus the retained 0.565893 s / 112.3 MB / 51.283 points. The fixed 12-worker configuration is faster despite the runner's 2-CPU cpuset. | `run-d52ee52b9909` | 0.638901 (board) | 117.1 MB | reverted |
 
 | 16 | Reverted candidate `8ea883d`: a shared atomic work queue for query scheduling passed all correctness gates but regressed the official 2-core benchmark to 2.4673 s wall / 2.2841 s exec versus the retained 2.0789 s / 1.8823 s baseline. Static equal chunks are faster on this workload despite potential theoretical imbalance. | `41281552568` | 2.4673 (CI) | pending | reverted |
