@@ -1,6 +1,6 @@
 # Track B: performance log
 
-| 18 | Candidate: compact BOOL `AND` and `NOT` results in place instead of allocating a new vector for each operation. `OR` retains its allocating merge because it may grow the result. Release tests and official benchmark pending. | pending | pending | pending | pending |
+| 18 | Reverted candidate `5a2538a`: in-place BOOL `AND`/`NOT` compaction passed correctness but regressed the board to 1.177795 s / 865.5 MB / 38.387 points (official CI 6.3386 s / 864.2 MB) versus the retained 1.124 s / 477 MB baseline. Retaining large result capacities caused severe allocator peak-memory growth, especially across `OR` operations. | `run-1bb358646a78` | 1.177795 (board) | 865.5 MB | reverted |
 
 | 17 | Reverted candidate `050d395`: delta-varint presence postings passed the official hash and reduced cgroup memory from about 498 MB to 454.4 MB, but decoding every posting list regressed the official full-scale benchmark to 12.9617 s wall / 12.7996 s exec versus the retained ~3.2249 s baseline. The 4x time penalty dominates the memory gain. | `41395028601` | 12.9617 (CI) | 454.4 MB | reverted |
 

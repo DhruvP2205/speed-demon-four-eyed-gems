@@ -50,7 +50,6 @@ fn or(a: &[u32], b: &[u32]) -> Vec<u32> {
 }
 
 /// `R \ S(t)`: documents of `R` that do NOT contain `t`.
-#[cfg(test)]
 fn not(a: &[u32], b: &[u32]) -> Vec<u32> {
     let mut out = Vec::with_capacity(a.len());
     let (mut i, mut j) = (0, 0);
@@ -69,53 +68,15 @@ fn not(a: &[u32], b: &[u32]) -> Vec<u32> {
     out
 }
 
-#[inline]
-fn and_in_place(result: &mut Vec<u32>, postings: &[u32]) {
-    let mut write = 0;
-    let mut j = 0;
-    for read in 0..result.len() {
-        while j < postings.len() && postings[j] < result[read] {
-            j += 1;
-        }
-        if j == postings.len() {
-            break;
-        }
-        if postings[j] == result[read] {
-            result[write] = result[read];
-            write += 1;
-            j += 1;
-        }
-    }
-    result.truncate(write);
-}
-
-#[inline]
-fn not_in_place(result: &mut Vec<u32>, postings: &[u32]) {
-    let mut write = 0;
-    let mut j = 0;
-    for read in 0..result.len() {
-        while j < postings.len() && postings[j] < result[read] {
-            j += 1;
-        }
-        if j == postings.len() || postings[j] != result[read] {
-            result[write] = result[read];
-            write += 1;
-        } else {
-            j += 1;
-        }
-    }
-    result.truncate(write);
-}
-
 fn eval_bool(index: &Index, terms: &[u32], ops: &[Op]) -> Vec<u32> {
     let mut result = index.presence_of(terms[0]).to_vec();
     for (op, &term) in ops.iter().zip(&terms[1..]) {
         let postings = index.presence_of(term);
-        match op {
-            Op::And => and_in_place(&mut result, postings),
-            Op::Or => result = or(&result, postings),
-            Op::Not => not_in_place(&mut result, postings),
-        }
+        result = match op {
+            Op::And => and(&result, postings),
+            Op::Or => or(&result, postings),
+            Op::Not => not(&result, postings),
+        };
     }
     result
 }
@@ -210,28 +171,6 @@ mod tests {
     #[test]
     fn not_removes_the_second_slices_elements() {
         assert_eq!(not(&[1, 2, 3, 4], &[2, 4]), vec![1, 3]);
-    }
-
-    #[test]
-    fn in_place_boolean_ops_match_allocating_ops() {
-        for (mut result, postings) in [
-            (vec![1, 2, 3, 5], vec![2, 3, 4]),
-            (vec![1, 2, 3, 5], vec![]),
-            (vec![], vec![1, 2]),
-        ] {
-            let expected_and = and(&result, &postings);
-            and_in_place(&mut result, &postings);
-            assert_eq!(result, expected_and);
-        }
-        for (mut result, postings) in [
-            (vec![1, 2, 3, 4], vec![2, 4]),
-            (vec![1, 2, 3, 4], vec![]),
-            (vec![], vec![1, 2]),
-        ] {
-            let expected_not = not(&result, &postings);
-            not_in_place(&mut result, &postings);
-            assert_eq!(result, expected_not);
-        }
     }
 
     #[test]
