@@ -1,5 +1,7 @@
 # Track A: performance log
 
+| 8 | Candidate: pre-sized each worker's bounded endpoint/hour tables and group map, plus an approximate latency-vector capacity from its byte range. Exact parsing, percentile selection, and output are unchanged. Release tests and official benchmark pending. | pending | pending | pending | pending |
+
 | 7 | Reverted FNV-1a hashing candidate `6d4ef13`. It passed local and official correctness, but the live board measured 0.141637 s / 40.7 MB / 684 lines / 58.195855 points, worse than the retained 0.140508 s / 39.0 MB / 660-line / 58.376860-point best. The extra source lines and board regression outweighed the local-only improvement. | board run `run-6c5ba9bb2ee5` | 0.141637 (board) | 40.7 MB | reverted |
 
 | 5 | Percentile-output allocation reduction: percentile workers now write directly into disjoint slices of the final percentile table instead of allocating per-thread result vectors and merging them serially. Release tests: 14/14 passed; release build passed. Official seed-1 hash and all holdout jobs passed. | 41264778829 | 0.7076 wall / 0.5381 exec (shared 2-core CI runner) | 39.22 MB | kept pending board measurement |

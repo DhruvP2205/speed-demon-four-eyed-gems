@@ -60,6 +60,8 @@ use mmap_file::MappedFile;
 use parse::{hour_output_bytes, parse_u32};
 
 const MAX_THREADS: usize = 12;
+const MAX_ENDPOINTS: usize = 2048;
+const MAX_HOURS: usize = 64;
 const INPUT_NAME: &str = "requests.log";
 const OUTPUT_NAME: &str = "summary.txt";
 
@@ -88,14 +90,14 @@ struct LocalState {
 }
 
 impl LocalState {
-    fn new() -> Self {
+    fn new(expected_lines: usize) -> Self {
         LocalState {
-            endpoint_ids: HashMap::new(),
-            endpoint_names: Vec::new(),
-            hour_ids: HashMap::new(),
-            hour_names: Vec::new(),
-            groups: HashMap::new(),
-            latencies: Vec::new(),
+            endpoint_ids: HashMap::with_capacity(MAX_ENDPOINTS),
+            endpoint_names: Vec::with_capacity(MAX_ENDPOINTS),
+            hour_ids: HashMap::with_capacity(MAX_HOURS),
+            hour_names: Vec::with_capacity(MAX_HOURS),
+            groups: HashMap::with_capacity(MAX_HOURS * MAX_ENDPOINTS),
+            latencies: Vec::with_capacity(expected_lines),
         }
     }
 
@@ -219,7 +221,8 @@ fn main() {
             .iter()
             .map(|&(start, end)| {
                 scope.spawn(move || {
-                    let mut state = LocalState::new();
+                    let expected_lines = (end - start) / 80;
+                    let mut state = LocalState::new(expected_lines);
                     for line in data[start..end].split(|&b| b == b'\n') {
                         if !line.is_empty() {
                             process_line(line, &mut state);
