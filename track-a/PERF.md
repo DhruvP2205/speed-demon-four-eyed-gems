@@ -1,6 +1,6 @@
 # Track A: performance log
 
-| 8 | Candidate: pre-sized each worker's bounded endpoint/hour tables and group map, plus an approximate latency-vector capacity from its byte range. Exact parsing, percentile selection, and output are unchanged. Release tests and official benchmark pending. | pending | pending | pending | pending |
+| 8 | Reverted candidate `0102858`: pre-sizing endpoint/hour/group tables and latency vectors passed correctness but regressed the board to 0.152217 s / 75.6 MB / 54.825 points versus the retained 0.140508 s / 40.9 MB / 58.377 points. The large per-thread group reservation dominated memory and slowed ingestion. | `run-0e527bd44a71` | 0.152217 (board) | 75.6 MB | reverted |
 
 | 7 | Reverted FNV-1a hashing candidate `6d4ef13`. It passed local and official correctness, but the live board measured 0.141637 s / 40.7 MB / 684 lines / 58.195855 points, worse than the retained 0.140508 s / 39.0 MB / 660-line / 58.376860-point best. The extra source lines and board regression outweighed the local-only improvement. | board run `run-6c5ba9bb2ee5` | 0.141637 (board) | 40.7 MB | reverted |
 
