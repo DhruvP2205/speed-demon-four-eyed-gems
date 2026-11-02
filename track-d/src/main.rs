@@ -41,13 +41,6 @@ use reorder::{bfs_order, remap_bitmap, remap_csr};
 use workspace::Workspace;
 
 const MAX_THREADS: usize = 12;
-
-#[inline]
-fn worker_count(limit: usize) -> usize {
-    std::thread::available_parallelism()
-        .map_or(limit, |n| n.get().min(limit))
-        .max(1)
-}
 const GRAPH_FILE: &str = "graph.txt";
 const QUERIES_FILE: &str = "queries.txt";
 const OUTPUT_FILE: &str = "distances.txt";
@@ -78,7 +71,7 @@ fn load_graph(path: &str) -> (Csr, Vec<bool>, Vec<u32>) {
     let data = mapped.as_slice();
     let (n, m, header_end) = read_header(data);
 
-    let ranges = line_aligned_ranges(data, header_end, worker_count(MAX_THREADS));
+    let ranges = line_aligned_ranges(data, header_end, MAX_THREADS);
     let (csr, has_in_edge) = build_forward_and_in_edge(n, m, data, &ranges);
 
     let new_id_of_old = bfs_order(n, &csr);
@@ -142,7 +135,7 @@ fn main() {
         .collect();
 
     let mut results: Vec<Option<u64>> = vec![None; queries.len()];
-    let thread_count = worker_count(MAX_THREADS).min(queries.len().max(1));
+    let thread_count = MAX_THREADS.min(queries.len().max(1));
     let chunk_ranges = even_chunks(queries.len(), thread_count);
 
     std::thread::scope(|scope| {
