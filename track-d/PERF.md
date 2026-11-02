@@ -1,5 +1,7 @@
 # Track D: performance log
 
+| 17 | Candidate: cap graph parsing and query workers to the runtime's available CPU count instead of always spawning 12 workers. The official runner reports a 2-CPU cpuset, so this should reduce oversubscription and per-thread workspace memory. Release tests and official benchmark pending. | pending | pending | pending | pending |
+
 | 16 | Reverted candidate `8ea883d`: a shared atomic work queue for query scheduling passed all correctness gates but regressed the official 2-core benchmark to 2.4673 s wall / 2.2841 s exec versus the retained 2.0789 s / 1.8823 s baseline. Static equal chunks are faster on this workload despite potential theoretical imbalance. | `41281552568` | 2.4673 (CI) | pending | reverted |
 
 | 15 | Reverted candidate `ad5b2de` after official Track D measurement. Reusing radix-heap bucket capacity passed correctness but regressed official full-scale wall time to 2.1897 s / exec 2.0328 s and memory to 118,319,787 bytes versus the retained 2.0789 s / 116,649,984-byte baseline. The local Windows speedup did not transfer to the Linux runner. | `41277374502` | 2.1897 (CI) | 112.8 MiB | reverted |
