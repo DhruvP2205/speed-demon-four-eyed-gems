@@ -1,5 +1,7 @@
 # Track B: performance log
 
+| 17 | Candidate: delta-varint encode sorted presence postings instead of storing raw `u32` document IDs. Decoding is exact and preserves sorted-list semantics; phrase verification remains mmap-backed. Release tests and official benchmark pending. | pending | pending | pending | pending |
+
 | 16 | Reverted two-pass direct posting scatter candidate `318f3de`. It passed official seed/holdout correctness, but the official full-scale benchmark regressed to wall 7.2470 s / exec 7.0752 s / 500,918,955 bytes versus the retained baseline near 3.2249 s / 498,372,608 bytes. The second full corpus scan costs more than the temporary posting-vector memory saved on the official 2-core runner. Restored in `49dcbfb`. | `41277990492` | 7.2470 (CI) | 477.5 MiB | reverted |
 
 | 14 | Reverted candidate `060b232` after the official Track B workflow. The tokenizer arithmetic and removal of worker-side document offsets passed all correctness gates and local template hashes, but official full-scale measurement regressed to wall 5.6244 s / exec 5.4614 s / 498,397,184 bytes versus the retained ~3.2249 s baseline. The regression outweighs the local-only improvement; source is restored to the board-winning shape in `90fa23a`. | `41276874963` | 5.6244 (CI) | 474.9 MiB | reverted |

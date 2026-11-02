@@ -69,13 +69,13 @@ fn not(a: &[u32], b: &[u32]) -> Vec<u32> {
 }
 
 fn eval_bool(index: &Index, terms: &[u32], ops: &[Op]) -> Vec<u32> {
-    let mut result = index.presence_of(terms[0]).to_vec();
+    let mut result = index.presence_of(terms[0]);
     for (op, &term) in ops.iter().zip(&terms[1..]) {
         let postings = index.presence_of(term);
         result = match op {
-            Op::And => and(&result, postings),
-            Op::Or => or(&result, postings),
-            Op::Not => not(&result, postings),
+            Op::And => and(&result, &postings),
+            Op::Or => or(&result, &postings),
+            Op::Not => not(&result, &postings),
         };
     }
     result
@@ -95,12 +95,13 @@ fn eval_phrase(index: &Index, data: &[u8], terms: &[u32], term_bytes: &[Vec<u8>]
     let mut term_order: Vec<usize> = (0..terms.len()).collect();
     term_order.sort_by_key(|&i| index.presence_of(terms[i]).len());
 
-    let mut candidates = index.presence_of(terms[term_order[0]]).to_vec();
+    let mut candidates = index.presence_of(terms[term_order[0]]);
     for &i in &term_order[1..] {
         if candidates.is_empty() {
             return candidates;
         }
-        candidates = and(&candidates, index.presence_of(terms[i]));
+        let postings = index.presence_of(terms[i]);
+        candidates = and(&candidates, &postings);
     }
 
     let k = terms.len();
@@ -134,7 +135,8 @@ fn eval_phrase(index: &Index, data: &[u8], terms: &[u32], term_bytes: &[Vec<u8>]
             }
             for (t, term) in terms.iter().enumerate().skip(1) {
                 let (pos, bytes, len) = doc_tokens[w + t];
-                if pos != start_pos + t as u32 || bytes[..len as usize] != *term_bytes[*term as usize]
+                if pos != start_pos + t as u32
+                    || bytes[..len as usize] != *term_bytes[*term as usize]
                 {
                     continue 'windows;
                 }
@@ -193,14 +195,18 @@ mod tests {
 
     #[test]
     fn phrase_matches_consecutive_terms_in_order() {
-        let (idx, data, term_bytes) = build(&["0\tthe surety posted bail bond today"], &["bail", "bond"]);
+        let (idx, data, term_bytes) =
+            build(&["0\tthe surety posted bail bond today"], &["bail", "bond"]);
         assert_eq!(eval_phrase(&idx, &data, &[0, 1], &term_bytes), vec![0]);
     }
 
     #[test]
     fn phrase_requires_exact_adjacency_not_just_presence() {
         let (idx, data, term_bytes) = build(&["0\tbail posted bond"], &["bail", "bond"]);
-        assert_eq!(eval_phrase(&idx, &data, &[0, 1], &term_bytes), Vec::<u32>::new());
+        assert_eq!(
+            eval_phrase(&idx, &data, &[0, 1], &term_bytes),
+            Vec::<u32>::new()
+        );
     }
 
     #[test]
@@ -218,7 +224,10 @@ mod tests {
         let long_token = "a".repeat(40);
         let doc = format!("0\tbail {long_token} bond");
         let (idx, data, term_bytes) = build(&[&doc], &["bail", "bond"]);
-        assert_eq!(eval_phrase(&idx, &data, &[0, 1], &term_bytes), Vec::<u32>::new());
+        assert_eq!(
+            eval_phrase(&idx, &data, &[0, 1], &term_bytes),
+            Vec::<u32>::new()
+        );
     }
 
     #[test]

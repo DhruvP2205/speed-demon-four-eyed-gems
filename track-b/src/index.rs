@@ -137,16 +137,33 @@ fn scan_docs(
 /// plus each document's absolute byte range in the mmap'd corpus
 /// (`doc_offsets`, for PHRASE's re-tokenize-the-candidate check).
 pub struct Index {
-    presence: Vec<u32>,
+    presence: Vec<u8>,
     presence_offsets: Vec<(u32, u32)>,
     doc_offsets: Vec<(u32, u32)>,
 }
 
 impl Index {
     #[inline]
-    pub fn presence_of(&self, term_id: u32) -> &[u32] {
+    pub fn presence_of(&self, term_id: u32) -> Vec<u32> {
         let (start, end) = self.presence_offsets[term_id as usize];
-        &self.presence[start as usize..end as usize]
+        let bytes = &self.presence[start as usize..end as usize];
+        let mut out = Vec::new();
+        let mut previous = 0u32;
+        let mut value = 0u32;
+        let mut shift = 0;
+        for &byte in bytes {
+            value |= ((byte & 0x7f) as u32) << shift;
+            if byte & 0x80 == 0 {
+                previous += value;
+                out.push(previous);
+                shift = 0;
+                value = 0;
+            } else {
+                shift += 7;
+            }
+        }
+        debug_assert_eq!(shift, 0);
+        out
     }
 
     /// The raw text bytes (after the `doc_id\t` prefix) of `doc_id`,
@@ -177,11 +194,7 @@ impl Index {
 /// scale -- measured costing 1.81s of a 2.67s total build, by far the
 /// dominant cost (see PERF.md); this scatter does the same job in a
 /// single linear pass.
-pub fn build_index(
-    data: &[u8],
-    ranges: &[(usize, usize)],
-    term_bytes: &[Vec<u8>],
-) -> Index {
+pub fn build_index(data: &[u8], ranges: &[(usize, usize)], term_bytes: &[Vec<u8>]) -> Index {
     let num_terms = term_bytes.len();
     let term_lookup: HashMap<&[u8], u32, FnvBuildHasher> = term_bytes
         .iter()
@@ -233,12 +246,52 @@ pub fn build_index(
         }
     }
 
-    let presence_offset_pairs: Vec<(u32, u32)> =
-        presence_offsets.windows(2).map(|w| (w[0], w[1])).collect();
+    let mut byte_offsets = vec![0u32; num_terms + 1];
+    for term in 0..num_terms {
+        let mut previous = 0u32;
+        for &doc_id in
+            &presence_docs[presence_offsets[term] as usize..presence_offsets[term + 1] as usize]
+        {
+            let mut delta = doc_id - previous;
+            loop {
+                byte_offsets[term + 1] += 1;
+                if delta < 128 {
+                    break;
+                }
+                delta >>= 7;
+            }
+            previous = doc_id;
+        }
+        byte_offsets[term + 1] += byte_offsets[term];
+    }
+
+    let mut compressed_presence = vec![0u8; byte_offsets[num_terms] as usize];
+    for term in 0..num_terms {
+        let mut previous = 0u32;
+        let mut pos = byte_offsets[term] as usize;
+        for &doc_id in
+            &presence_docs[presence_offsets[term] as usize..presence_offsets[term + 1] as usize]
+        {
+            let mut delta = doc_id - previous;
+            loop {
+                let mut byte = (delta & 0x7f) as u8;
+                delta >>= 7;
+                if delta != 0 {
+                    byte |= 0x80;
+                }
+                compressed_presence[pos] = byte;
+                pos += 1;
+                if delta == 0 {
+                    break;
+                }
+            }
+            previous = doc_id;
+        }
+    }
 
     Index {
-        presence: presence_docs,
-        presence_offsets: presence_offset_pairs,
+        presence: compressed_presence,
+        presence_offsets: byte_offsets.windows(2).map(|w| (w[0], w[1])).collect(),
         doc_offsets,
     }
 }
@@ -263,15 +316,15 @@ mod tests {
     fn presence_lists_are_sorted_ascending_and_deduped_per_doc() {
         let docs = ["0\tbail bond bail", "1\tbail", "2\tbond"];
         let (idx, _data) = build(&docs, &["bail", "bond"]);
-        assert_eq!(idx.presence_of(0), &[0, 1]); // "bail": doc 0 once despite appearing twice
-        assert_eq!(idx.presence_of(1), &[0, 2]); // "bond"
+        assert_eq!(idx.presence_of(0), vec![0, 1]); // "bail": doc 0 once despite appearing twice
+        assert_eq!(idx.presence_of(1), vec![0, 2]); // "bond"
     }
 
     #[test]
     fn an_absent_term_has_an_empty_presence_list() {
         let docs = ["0\tbail"];
         let (idx, _data) = build(&docs, &["bail", "nothere"]);
-        assert_eq!(idx.presence_of(1), &[] as &[u32]);
+        assert_eq!(idx.presence_of(1), Vec::<u32>::new());
     }
 
     #[test]
@@ -301,7 +354,11 @@ mod tests {
             assert_eq!(idx.presence_of(1), baseline.presence_of(1), "n={n}");
             assert_eq!(idx.presence_of(2), baseline.presence_of(2), "n={n}");
             for doc in 0..200u32 {
-                assert_eq!(idx.doc_text(&data, doc), baseline.doc_text(&data, doc), "n={n} doc={doc}");
+                assert_eq!(
+                    idx.doc_text(&data, doc),
+                    baseline.doc_text(&data, doc),
+                    "n={n} doc={doc}"
+                );
             }
         }
     }
