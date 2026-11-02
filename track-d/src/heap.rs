@@ -3,7 +3,7 @@
 //! each new minimum avoids tree comparisons on the hot pop path.
 
 pub struct QuaternaryHeap<T> {
-    buckets: [Vec<(u64, T)>; 65],
+    buckets: Vec<Vec<(u64, T)>>,
     last: u64,
     len: usize,
 }
@@ -11,7 +11,7 @@ pub struct QuaternaryHeap<T> {
 impl<T: Copy> QuaternaryHeap<T> {
     pub fn new() -> Self {
         QuaternaryHeap {
-            buckets: std::array::from_fn(|_| Vec::new()),
+            buckets: (0..65).map(|_| Vec::new()).collect(),
             last: 0,
             len: 0,
         }

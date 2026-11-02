@@ -1,6 +1,6 @@
 # Track D: performance log
 
-| 18 | Candidate: store the 65 radix-heap buckets in a fixed array instead of an outer `Vec`. This removes one outer allocation per query worker while preserving each bucket's individual allocation and all heap operations. Release tests and official benchmark pending. | pending | pending | pending | pending |
+| 18 | Reverted candidate `2e4b401`: replacing the radix-heap's outer bucket `Vec` with a fixed array passed correctness but regressed the official benchmark to 2.2416 s wall / 2.1063 s exec / 117.8 MB versus the retained 2.0789 s / 1.8823 s / 116.6 MB baseline. The small allocation reduction did not offset the slower heap path. | `41393480126` | 2.2416 (CI) | 117.8 MB | reverted |
 
 | 17 | Reverted candidate `f8f1df4`: sizing parsing and query workers to the runtime's 2 available CPUs passed correctness but regressed the live board to 0.638901 s / 117.1 MB / 49.991 points versus the retained 0.565893 s / 112.3 MB / 51.283 points. The fixed 12-worker configuration is faster despite the runner's 2-CPU cpuset. | `run-d52ee52b9909` | 0.638901 (board) | 117.1 MB | reverted |
 
